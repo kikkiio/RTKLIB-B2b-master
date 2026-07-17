@@ -106,6 +106,26 @@ static double gettgd(int sat, const nav_t *nav, int type)
         return (i>=nav->n)?0.0:nav->eph[i].tgd[type]*CLIGHT;
     }
 }
+/* get BDS group delay for the actual observation code (m) ------------------*/
+static double getbdstgd(int sat, uint8_t code, const nav_t *nav)
+{
+    const char *obs=code2obs(code);
+
+    switch (obs[0]) {
+        case '1': /* B1C: TGD_B1Cp (+ ISC_B1Cd for data/data+pilot) */
+            return gettgd(sat,nav,2)+(obs[1]=='P'?0.0:gettgd(sat,nav,4));
+        case '2': /* B1I */
+            return gettgd(sat,nav,0);
+        case '5': /* B2a: TGD_B2ap (+ ISC_B2ad for data/data+pilot) */
+            return gettgd(sat,nav,3)+(obs[1]=='P'?0.0:gettgd(sat,nav,5));
+        case '7': /* B2I/B2b */
+            return gettgd(sat,nav,1);
+        case '6': /* B3I is the legacy BDS group-delay reference */
+        case '8': /* no separate B2ab TGD is stored in eph_t */
+        default:
+            return 0.0;
+    }
+}
 /* test SNR mask -------------------------------------------------------------*/
 static int snrmask(const obsd_t *obs, const double *azel, const prcopt_t *opt)
 {
@@ -166,12 +186,13 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
             }
             return (P2-gamma*P1)/(1.0-gamma);
         }
-        else if (sys==SYS_CMP) { /* B1-B2 */
-            gamma=SQR(((obs->code[0]==CODE_L2I)?FREQ1_CMP:FREQL1)/FREQ2_CMP);
-            if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I */
-            else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
-            else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
-            b2=gettgd(sat,nav,1); /* TGD_B2I/B2bI (m) */
+        else if (sys==SYS_CMP) { /* configured BDS dual-frequency pair */
+            double freq1=sat2freq(sat,obs->code[0],nav);
+            double freq2=sat2freq(sat,obs->code[f2],nav);
+            if (freq1==0.0||freq2==0.0||fabs(freq1-freq2)<1E-3) return 0.0;
+            gamma=SQR(freq1/freq2);
+            b1=getbdstgd(sat,obs->code[0],nav);
+            b2=getbdstgd(sat,obs->code[f2],nav);
             return ((P2-gamma*P1)-(b2-gamma*b1))/(1.0-gamma);
         }
         else if (sys==SYS_IRN) { /* L5-S */
@@ -196,10 +217,8 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
             else                    b1=gettgd(sat,nav,1); /* BGD_E1E5b */
             return P1-b1;
         }
-        else if (sys==SYS_CMP) { /* B1I/B1Cp/B1Cd */
-            if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I */
-            else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
-            else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
+        else if (sys==SYS_CMP) { /* configured primary BDS frequency */
+            b1=getbdstgd(sat,obs->code[0],nav);
             return P1-b1;
         }
         else if (sys==SYS_IRN) { /* L5 */
@@ -364,7 +383,7 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
         /* pseudorange residual */
         v[nv]=P-(r+dtr-CLIGHT*dts[i*2]+dion+dtrp);
         trace(4,"sat=%d: v=%.3f P=%.3f obs->p=%.3f r=%.3f dtr=%.6f dts=%.6f dion=%.3f dtrp=%.3f\n",
-            sat,v[nv],P, obs[i + 1].P[0], r, dtr, dts[i * 2], dion, dtrp);
+            sat,v[nv],P, obs[i].P[0], r, dtr, dts[i * 2], dion, dtrp);
         
         /* design matrix */
         for (j=0;j<NX;j++) {
@@ -516,6 +535,8 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
             if ((stat=valsol(azel,vsat,n,opt,v,nv,NX,msg))) {
                 sol->stat=opt->sateph==EPHOPT_SBAS?SOLQ_SBAS:SOLQ_SINGLE;
             }
+            double tow = time2gpst(obs[0].time, NULL);
+            trace(2, "estpos %.2f pos=%2f %2f %2f clk=%.2f\n", tow, x[0], x[1], x[2], x[3]);
             free(v); free(H); free(var);
             return stat;
         }
@@ -523,7 +544,6 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
 	
     if (i>=MAXITR) 
 		sprintf(msg,"iteration divergent i=%d",i);
-    
     free(v); free(H); free(var);
     return 0;
 }
