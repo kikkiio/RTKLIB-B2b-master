@@ -565,11 +565,11 @@ static double varerr(int sat, int sys, double el, double snr_rover,
     int curprn = 0;
     satsys(sat,&curprn);
 
-    if(sys == SYS_CMP  && (curprn==38 || curprn==40)){
+    if(sys == SYS_CMP && !opt->if_model && (curprn==38 || curprn==40)){
         fact *= 3; 
     }
 
-    if(sys == SYS_CMP  && (curprn==39)){
+    if(sys == SYS_CMP && !opt->if_model && curprn==39){
         /* During the test, C39 showed the worst orbital accuracy, so the C39 weight was reduced by another two times. */
         fact *= 6; 
     }
@@ -1389,6 +1389,26 @@ static int model_iono(gtime_t time, const double *pos, const double *azel,
     return 0;
 }
 /* phase and code residuals --------------------------------------------------*/
+/* PRNs are identifiers, not permanent BDS generations. The ANTEX record has
+ * already been selected for the observation epoch. Modern B1C/B2a tracking
+ * supplies a fallback if there is no descriptive satellite antenna record. */
+static int ppp_bds3(const obsd_t *obs, const nav_t *nav)
+{
+    const pcv_t *pcv=nav->pcvs+obs->sat-1;
+    int i,prn=0;
+    if (pcv->sat==obs->sat) {
+        if (!strncmp(pcv->type,"BEIDOU-3",8)) return 1;
+        if (!strncmp(pcv->type,"BEIDOU-2",8)) return 0;
+    }
+    for (i=0;i<NFREQ;i++) {
+        uint8_t c=obs->code[i];
+        if (c==CODE_L1D||c==CODE_L1P||c==CODE_L1X||
+            c==CODE_L5D||c==CODE_L5P||c==CODE_L5X) return 1;
+    }
+    satsys(obs->sat,&prn);
+    return prn>16; /* compatibility for legacy observations without metadata */
+}
+
 static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                    const double *dts, const double *var_rs, const int *svh,
                    const double *dr, int *exc, const nav_t *nav,
@@ -1506,7 +1526,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 			}
 
 #ifdef	BDS2BDS3
-			if(sys==SYS_CMP && curprn > 16)
+			if(sys==SYS_CMP && (opt->if_model?ppp_bds3(obs+i,nav):curprn>16))
 				k = NSYS;
 #endif
 			cdtr=x[IC(k,opt)];

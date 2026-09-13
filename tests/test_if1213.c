@@ -490,8 +490,32 @@ static void gal_navigation_tests(void)
     CHECK(remove(path)==0);freenav(nav,1);CHECK(!nav->gal_eph&&!nav->ngal_eph);free(nav);
 }
 
+static void bds_prn_reassignment_tests(void)
+{
+    nav_t *nav=calloc(1,sizeof(*nav));
+    obsd_t obs={0};prcopt_t o=options();
+    double oldvar,newvar;
+    obs.sat=satno(SYS_CMP,6);obs.code[0]=CODE_L2I;
+    nav->pcvs[obs.sat-1].sat=obs.sat;
+    strcpy(nav->pcvs[obs.sat-1].type,"BEIDOU-3I");
+    CHECK(ppp_bds3(&obs,nav)); /* C06 after April 2026 */
+    strcpy(nav->pcvs[obs.sat-1].type,"BEIDOU-2I");
+    CHECK(!ppp_bds3(&obs,nav)); /* historical C06 */
+    nav->pcvs[obs.sat-1].type[0]=0;obs.code[1]=CODE_L5P;
+    CHECK(ppp_bds3(&obs,nav));
+    obs.code[1]=0;CHECK(!ppp_bds3(&obs,nav));
+    obs.sat=satno(SYS_CMP,39);
+    newvar=varerr(obs.sat,SYS_CMP,PI/4,45,0,&o,&obs);
+    NEAR(newvar,varerr(satno(SYS_CMP,21),SYS_CMP,PI/4,45,0,&o,&obs),1E-12);
+    o.if_model=0;
+    oldvar=varerr(obs.sat,SYS_CMP,PI/4,45,0,&o,&obs);
+    CHECK(oldvar>newvar*35); /* legacy mode retains its historical weighting */
+    free(nav);
+}
+
 int main(void)
 {
+    bds_prn_reassignment_tests();
     coefficients();selection();antenna();configurable_selection();pair_config_tests();measurement_regression();gal_model_tests();gal_navigation_tests();
     measurement_and_slip("B2a,B1C,B1I");measurement_and_slip("B1I,B3I,B2a");equations();
     printf("IF1213: %d checks, %d failures\n",checks,failures);

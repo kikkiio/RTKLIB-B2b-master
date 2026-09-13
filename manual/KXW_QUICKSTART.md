@@ -18,12 +18,12 @@ cmake --build build --config Release --target rtppp inspect_rtcm_input inspect_k
 ## 一条命令解算并统计
 
 ```powershell
-python tools/run_kxw.py --data D:/WORK-FRR/DATA/260909-4 --output example/rtppp/my_run_260909_4 --antenna example/rtppp/conf/igs20_2350.atx --elevation 3 --robust 0
+python tools/run_kxw.py --data D:/WORK-FRR/DATA/260909-4 --output example/rtppp/my_run_260909_4 --antenna example/rtppp/conf/igs20.atx --elevation 7 --robust 0
 ```
 
 - 换数据：只修改 `--data`。
 - 换结果目录：修改 `--output`，必须是新的空目录，防止旧滤波状态和输出混入。
-- 换高度角：`--elevation 3` 或 `--elevation 10`。
+- 换高度角：`--elevation 7` 或 `--elevation 10`。
 - 原有剔除：`--robust 0`；新增降权加原有剔除：`--robust 0`。
 - 默认静态：`--mode static`。确为动态数据时用 `--mode kinematic`；动态模式不自动生成“末尾均值为真值”的静态统计。
 - 默认20倍回放：处理能力不足时用 `--speed 1`、`5` 或 `10`，支持1至20。

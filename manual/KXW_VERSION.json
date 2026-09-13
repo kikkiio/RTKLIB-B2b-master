@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "原方案：KXW IF1213，旧天线配置，原有残差剔除",
+  "version": 2,
+  "description": "新模型：更新天线配置与北斗 PRN 代际，保留原有剔除",
   "reconstruction": "V1 core restored from pre-antenna-QC backup; V2 adds only verified PRN/generation and IF weighting changes; V3 uses current validated source. Generic replay/audit/statistics tooling is shared and added for standalone use.",
   "files": {
     "src/B2b.c": "615b18cfc63ca510c1b0e446de3e624c6668675d89084fddf1e1a6455653d2ab",
@@ -22,7 +22,7 @@
     "src/options.c": "5cf37b88f5b50e790c8aec6f4b25ea049bd409a865d2b307fe0286e38f9af4a4",
     "src/pntpos.c": "ff54a53884cc3a7c9aba97d988ed3f841d49dcef046328aedacce861de0ac142",
     "src/postpos.c": "868c366ff95c7d03694619fd73f32924c968a766e1c0e2099b060d1d432e17b2",
-    "src/ppp.c": "6eeb44491b273c3c020c63485800107d8c3cb6b601476c9e59792b265bbc8b00",
+    "src/ppp.c": "2be4a8a5e74e3079cb90dfe886dcad6d131a8f9bac0e371be7a54621635cf122",
     "src/ppp_ar.c": "95e3dd694327743802cb7e16176d77dff56902cf65909439d5590a89faa6eb9d",
     "src/preceph.c": "a6a8f21ce94e98f1b9f833e689f035d8ae8fabd8a256ad771a67e3e32ccfe3f3",
     "src/rcvraw.c": "0b901fa1750f93c448f7bc8ddcc1c4d2d3448bc8fa8457cc1b133176dae9ca76",
@@ -93,7 +93,7 @@
     "tests/inspect_gal_input.c": "38e53accf28f681e7140134d840bac7d9f2d1d63fb84d6904b2713bcb927351c",
     "tests/inspect_kxw_input.c": "540b1c50e94f3876781631e40ea9944443d647dd3c99eeda643ee1e421b6c319",
     "tests/test_bds_signal.c": "2fc83adf41f16ab504e910e84c8dabaf6df3398bf26771d4934311a7bc61cefa",
-    "tests/test_if1213.c": "c4be02886dd952882ee61b8ede3766545750dfd76fe66193fd9cf12e2c8c7cde",
+    "tests/test_if1213.c": "7e3a6474893d9dcf5db6d82b31ee8a6e79ccb670f545c91fb64aa75f5898329d",
     "tests/test_kxw.c": "d2f29c51bb0ea7993fbde77f84e6609daedd8f2c110735b172c96143109c3848",
     "tests/fixtures/measurement_before_unification.h": "f63bc0bbc89fae90bafbc6cd573e0a698f5dc928aebedc682575da38e9b4f0bc",
     "CMakeLists.txt": "75acc71d3ed96621206979675fe2294b8481bf9f74510e3e1a48a753af911ec3",
@@ -102,10 +102,10 @@
     "tools/CMakeLists.txt": "fc2a19096c40ff25f4708f7f18460303318ab40f18e1d97a91880f98a47a04f7",
     "tools/ppp_statistics.cpp": "420982259da670ff56089ee953a429ec502b4989154dbad415950e6038166171",
     "tools/inspect_rtcm_input.c": "c0b8adec536e112e5b36e7276071b8a5e040a609d0ee7947fada248ceb4c9f23",
-    "tools/run_kxw.py": "a43b03e8dc10cf6d1f33e91d4a5bc968df702a8254520277ca88f00a2636d452",
+    "tools/run_kxw.py": "ec07571eebb69bfae3809e0603826d7c34991fac8dfb114b08921bb40414d544",
     "manual/PPP_STATISTICS.md": "64abf50ef5fe6940720a78192c71f40efbc5dde661444389d51545379b5afbb5",
-    "manual/KXW_QUICKSTART.md": "744e85db80eed8c662c45cec7290809c702f53cc97d2eceac8de2a7e4994a41b",
-    "example/rtppp/conf/kxw_if1213.conf": "241e274e0b5c7c7c516c51b4191f102f29938bf477aa8cb7ba37b3bd101a49e8",
-    "README.md": "16a187b4c30214a8a82cbe17d46a42830c54a7acd2fc582786d043f1e80f0e3e"
+    "manual/KXW_QUICKSTART.md": "b91ee361f0fdf2266ffc902815b3a51c44d9d176beef3d6f061b185d7148b7d9",
+    "example/rtppp/conf/kxw_if1213.conf": "9db63667d531109722fd70d2fdd88dd9369586268d6c77f812441228e6fbd513",
+    "README.md": "643d6b1d60ee8ec25a903a9054212a67f958c4a9d57b0d590a025121b0a94250"
   }
 }

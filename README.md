@@ -106,7 +106,7 @@ This project is licensed under the [GNU General Public License v3.0](https://www
 
 ## KXW IF1213 三阶段迭代
 
-当前快照：**第 1 版，原方案：KXW IF1213，旧天线配置，原有残差剔除**。
+当前快照：**第 2 版，新模型：更新天线配置与北斗 PRN 代际，保留原有剔除**。
 
 详细构建和数据调用见 [KXW_QUICKSTART.md](manual/KXW_QUICKSTART.md)。三个版本使用分支 codex/kxw-v1-original、codex/kxw-v2-new-model、codex/kxw-v3-robust 固定保存；main 最终指向第三版。
 
