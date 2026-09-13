@@ -18,6 +18,8 @@
 #include <io.h>
 #define write _write
 #define close _close
+#include <winsock2.h>
+#include <windows.h>
 #else
 #include <unistd.h>
 #include <fcntl.h>

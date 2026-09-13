@@ -146,7 +146,6 @@ typedef struct {            /* file control type */
     FILE *fp_tag_tmp;       /* temporary file pointer of tag file for swap */
     char path[MAXSTRPATH];  /* file path */
     char openpath[MAXSTRPATH]; /* open file path */
-    char tagpath[MAXSTRPATH];  /* optional separate time-tag path */
     int mode;               /* file mode */
     int timetag;            /* time tag flag (0:off,1:on) */
     int repmode;            /* replay mode (0:master,1:slave) */
@@ -588,7 +587,7 @@ static int statexserial(serial_t *serial, char *msg)
 }
 /* open file -----------------------------------------------------------------*/
 static int openfile_(file_t *file, gtime_t time, char *msg)
-{
+{    
     FILE *fp;
     double time_sec;
     uint32_t time_time;
@@ -623,11 +622,7 @@ static int openfile_(file_t *file, gtime_t time, char *msg)
     }
     tracet(4,"openfile_: open file %s (%s)\n",file->openpath,rw);
     
-    if (file->tagpath[0]) {
-        strncpy(tagpath,file->tagpath,sizeof(tagpath)-1);
-        tagpath[sizeof(tagpath)-1]='\0';
-    }
-    else sprintf(tagpath,"%s.tag",file->openpath);
+    sprintf(tagpath,"%s.tag",file->openpath);
     
     if (file->timetag) { /* output/sync time-tag */
         
@@ -640,16 +635,32 @@ static int openfile_(file_t *file, gtime_t time, char *msg)
         tracet(4,"openfile_: open tag file %s (%s)\n",tagpath,rw);
         
         if (file->mode&STR_MODE_R) {
-            if (fread(&tagh,TIMETAGH_LEN,1,file->fp_tag)==1&&
-                fread(&time_time,sizeof(time_time),1,file->fp_tag)==1&&
-                fread(&time_sec ,sizeof(time_sec ),1,file->fp_tag)==1) {
+            /* Legacy tags use TIME(4+8); 64-bit RTKLIB 2.4.2 recorders
+               also write TIME(8+8). Record width disambiguates the header
+               without treating the high half of time_t as the fraction. */
+            long tag_size;
+            uint64_t time64=0;
+            int time_bytes=4,tag_ok=0,stride=4+file->size_fpos;
+            fseek(file->fp_tag,0,SEEK_END);tag_size=ftell(file->fp_tag);
+            rewind(file->fp_tag);
+            if (tag_size>=80&&(tag_size-80)%stride==0) time_bytes=8;
+            if (tag_size>=TIMETAGH_LEN+time_bytes+8&&
+                (tag_size-TIMETAGH_LEN-time_bytes-8)%stride==0&&
+                fread(&tagh,TIMETAGH_LEN,1,file->fp_tag)==1&&
+                fread(&time64,time_bytes,1,file->fp_tag)==1&&
+                fread(&time_sec,sizeof(time_sec),1,file->fp_tag)==1&&
+                !memcmp(tagh,"TIMETAG",7)&&isfinite(time_sec)&&time_sec>=0.0&&time_sec<1.0)
+                tag_ok=1;
+            if (tag_ok) {
                 memcpy(&file->tick_f,tagh+TIMETAGH_LEN-4,sizeof(file->tick_f));
-                file->time.time=(time_t)time_time;
+                file->time.time=(time_t)time64;
                 file->time.sec =time_sec;
                 file->wtime=file->time;
             }
             else {
-                file->tick_f=0;
+                sprintf(msg,"invalid time-tag header: %s",tagpath);
+                fclose(file->fp_tag);fclose(file->fp);file->fp_tag=file->fp=NULL;
+                return 0;
             }
             /* adust time to read playback file */
             timeset(gpst2utc(file->time));
@@ -696,8 +707,7 @@ static file_t *openfile(const char *path, int mode, char *msg)
     file_t *file;
     gtime_t time,time0={0};
     double speed=1.0,start=0.0,swapintv=0.0;
-    char *p,*q;
-    char tagpath[MAXSTRPATH]="";
+    char *p;
     int timetag=0,size_fpos=4; /* default 4B */
     
     tracet(3,"openfile: path=%s mode=%d\n",path,mode);
@@ -706,14 +716,7 @@ static file_t *openfile(const char *path, int mode, char *msg)
     
     /* file options */
     for (p=(char *)path;(p=strstr(p,"::"));p+=2) { /* file options */
-        if      (*(p+2)=='T') {
-            timetag=1;
-            if (*(p+3)=='=') {
-                q=strstr(p+4,"::");
-                snprintf(tagpath,sizeof(tagpath),"%.*s",
-                         q?(int)(q-(p+4)):(int)strlen(p+4),p+4);
-            }
-        }
+        if      (*(p+2)=='T') timetag=1;
         else if (*(p+2)=='+') sscanf(p+2,"+%lf",&start);
         else if (*(p+2)=='x') sscanf(p+2,"x%lf",&speed);
         else if (*(p+2)=='S') sscanf(p+2,"S=%lf",&swapintv);
@@ -728,7 +731,6 @@ static file_t *openfile(const char *path, int mode, char *msg)
     strcpy(file->path,path);
     if ((p=strstr(file->path,"::"))) *p='\0';
     file->openpath[0]='\0';
-    strcpy(file->tagpath,tagpath);
     file->mode=mode;
     file->timetag=timetag;
     file->repmode=0;

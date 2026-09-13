@@ -74,6 +74,17 @@ static char snrmask_[NFREQ][1024];
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
     {"pos1-frequency",  3,  (void *)&prcopt_.nf,         FRQOPT },
+    {"pos1-bdsif",      3,  (void *)&prcopt_.bds_if,     "0:b1i-b3i,1:b1c-b2a,2:b2a-b1c-b1i"},
+    {"pos1-ifmodel",    3,  (void *)&prcopt_.if_model,   "0:legacy,1:if1213,2:if12-control"},
+    {"pos1-bdsfreqs",   2,  (void *)prcopt_.bds_freqs,  "ordered B1I/B3I/B1C/B2a triple; empty:B2a,B1C,B1I"},
+    {"pos1-gpsifpairs", 2,  (void *)prcopt_.gps_if_pairs, "L1/L2 or L1/L2,L1/L5"},
+    {"pos1-galifpairs", 2,  (void *)prcopt_.gal_if_pairs, "E1/E5a or E1/E5a,E1/E5b"},
+    {"pos1-galeph",     0,  (void *)&prcopt_.gal_ephemeris, "0:disabled,1:explicit broadcast GAL"},
+    {"pos1-galbrdcsig", 1,  (void *)&prcopt_.gal_brdc_sigma, "common range sigma floor (m),0:3"},
+    {"file-galnav",     2,  (void *)prcopt_.gal_navfile, "GAL RINEX broadcast navigation"},
+    {"pos1-bdsifpairs", 2,  (void *)prcopt_.bds_if_pairs, "one pair or two common-anchor pairs, e.g. B1I/B3I,B1I/B2a"},
+    {"stats-ifcbprn",   1,  (void *)&prcopt_.ifcb_prn,   "m/sqrt(s),0:0.001"},
+    {"pos1-bdsantfallback",3,(void *)&prcopt_.bds_ant_fallback,"0:strict,1:e1-e5a"},
     {"pos1-soltype",    3,  (void *)&prcopt_.soltype,    TYPOPT },
     {"pos1-elmask",     1,  (void *)&elmask_,            "deg"  },
     {"pos1-snrmask_r",  3,  (void *)&prcopt_.snrmask.ena[0],SWTOPT},
@@ -284,6 +295,13 @@ extern opt_t *searchopt(const char *name, const opt_t *opts)
 *-----------------------------------------------------------------------------*/
 extern int str2opt(opt_t *opt, const char *str)
 {
+    if (!strcmp(opt->name,"file-galnav")&&strlen(str)>=MAXSTRPATH) {
+        ((char *)opt->var)[0]=0;return 0;
+    }
+    if ((!strcmp(opt->name,"pos1-bdsfreqs")||!strcmp(opt->name,"pos1-gpsifpairs")||
+         !strcmp(opt->name,"pos1-galifpairs")||!strcmp(opt->name,"pos1-bdsifpairs"))&&strlen(str)>=sizeof(prcopt_.bds_freqs)) {
+        strcpy((char *)opt->var,"INVALID");return 0;
+    }
     switch (opt->format) {
         case 0: *(int    *)opt->var=atoi(str); break;
         case 1: *(double *)opt->var=atof(str); break;
@@ -557,7 +575,10 @@ extern void getsysopts(prcopt_t *popt, solopt_t *sopt, filopt_t *fopt)
     trace(3,"getsysopts:\n");
     
     buff2sysopts();
-    if (popt) *popt=prcopt_;
+    if (popt) {
+        char msg[128];*popt=prcopt_;
+        if (!if_options_normalize(popt,msg)) {trace(1,"IF options: %s\n",msg);popt->if_model=-1;}
+    }
     if (sopt) *sopt=solopt_;
     if (fopt) *fopt=filopt_;
 }
@@ -603,9 +624,6 @@ extern void load_config(const char *filename, prcopt_t *popt, solopt_t *sopt, fi
 
     int infile_count = 0; // Counter for the infile array
 
-    /* Do not retain a BDS frequency order from a previously loaded file. */
-    setbdsfreqs(NULL);
-
     while (fgets(line, sizeof(line), file)) {
         char *start = line;
         while (isspace((unsigned char)*start)) start++;
@@ -633,9 +651,32 @@ extern void load_config(const char *filename, prcopt_t *popt, solopt_t *sopt, fi
             else if (strcmp(key, "prcopt.navsys") == 0)  _prcopt.navsys = atoi(value);
             else if (strcmp(key, "prcopt.sateph") == 0)  _prcopt.sateph = atoi(value);
             else if (strcmp(key, "prcopt.nf") == 0)      _prcopt.nf = atoi(value);
-            else if (strcmp(key, "prcopt.bdsfreqs") == 0) {
-                if (!setbdsfreqs(value))
-                    fprintf(stderr,"invalid prcopt.bdsfreqs: %s\n",value);
+            else if (strcmp(key, "prcopt.bds_if") == 0) _prcopt.bds_if = atoi(value);
+            else if (strcmp(key, "prcopt.bds_ant_fallback") == 0) _prcopt.bds_ant_fallback = atoi(value);
+            else if (strcmp(key, "prcopt.if_model") == 0) _prcopt.if_model = atoi(value);
+            else if (!strcmp(key,"prcopt.gal_if_pairs")) {
+                if (strlen(value)>=64) strcpy(_prcopt.gal_if_pairs,"INVALID");else strcpy(_prcopt.gal_if_pairs,value);
+            }
+            else if (!strcmp(key,"prcopt.gal_ephemeris")) _prcopt.gal_ephemeris=atoi(value);
+            else if (!strcmp(key,"prcopt.gal_brdc_sigma")) _prcopt.gal_brdc_sigma=atof(value);
+            else if (!strcmp(key,"prcopt.gal_navfile")) {
+                if (strlen(value)>=sizeof(_prcopt.gal_navfile)) _prcopt.if_model=-1;
+                else strcpy(_prcopt.gal_navfile,value);
+            }
+            else if (!strcmp(key,"prcopt.gps_if_pairs")||!strcmp(key,"prcopt.bds_if_pairs")) {
+                char *dst=!strcmp(key,"prcopt.gps_if_pairs")?_prcopt.gps_if_pairs:_prcopt.bds_if_pairs;
+                if (strlen(value)>=64) strcpy(dst,"INVALID");else strcpy(dst,value);
+            }
+            else if (strcmp(key, "prcopt.bds_freqs") == 0) {
+                if (strlen(value)>=sizeof(_prcopt.bds_freqs)) strcpy(_prcopt.bds_freqs,"INVALID");
+                else strcpy(_prcopt.bds_freqs,value);
+            }
+            else if (strcmp(key, "prcopt.ifcb_prn") == 0) _prcopt.ifcb_prn = atof(value);
+            else if (strcmp(key, "prcopt.replay_end") == 0) {
+                if (str2time(value,0,(int)strlen(value),&_prcopt.replay_end)) {
+                    fprintf(stderr,"Invalid prcopt.replay_end (GPST)\n");
+                    _prcopt.if_model=-1; /* fail validation, never run unbounded */
+                }
             }
             else if (strcmp(key, "prcopt.elmin") == 0)   _prcopt.elmin = atof(value)* D2R;
             else if (strcmp(key, "prcopt.snrmask_L1") == 0)    strcpy(snrmask_[0], value);
@@ -755,6 +796,7 @@ extern void load_config(const char *filename, prcopt_t *popt, solopt_t *sopt, fi
             else if (strcmp(key, "filopt.eop") == 0) strcpy(_filopt.eop, value);
             else if (strcmp(key, "filopt.tempdir") == 0) strcpy(_filopt.tempdir, value);
             else if (strcmp(key, "filopt.trace") == 0) strcpy(_filopt.trace, value);
+            else if (strcmp(key, "filopt.trace_daily") == 0) _filopt.trace_daily = atoi(value) != 0;
             /*------------------------------------------------------------------------------------------*/ 
 
             /*--------------------------------- Process stats options ---------------------------------*/ 
@@ -786,6 +828,10 @@ extern void load_config(const char *filename, prcopt_t *popt, solopt_t *sopt, fi
         }
     }
 
+    {
+        char msg[128];
+        if (!if_options_normalize(&_prcopt,msg)) {trace(1,"IF options: %s\n",msg);_prcopt.if_model=-1;}
+    }
     *popt = _prcopt;
     *sopt = _solopt;
     *fopt = _filopt;

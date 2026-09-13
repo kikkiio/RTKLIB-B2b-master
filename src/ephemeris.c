@@ -215,9 +215,7 @@ extern double eph2clk(gtime_t time, const eph_t *eph)
     double t,ts;
     int i;
 
-    //trace(4,"eph2clk : time=%s sat=%2d\n",time_str(time,3),eph->sat);
-    char satid[8]; satno2id(eph->sat, satid);
-    trace(4, "eph2clk : time=%s sat=%2d %s\n", time_str(time, 3), eph->sat, satid);
+    trace(4,"eph2clk : time=%s sat=%2d\n",time_str(time,3),eph->sat);
 
     t=ts=timediff(time,eph->toc);
 
@@ -504,9 +502,9 @@ static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
 
 	for (i = 0; i<n; i++) {
         // B2b-SSR scenario: IODC from ephemeris for B2bSSR IODN comparison
-        if (PPP_Glo.BDS_CNV1_flag == 1) brdc_iod = nav->eph[i].iodc;  
+        if (PPP_Glo.BDS_CNV1_flag == 1 || (sys==SYS_CMP && nav->eph[i].flag==BDS_NAV_KXW_CNV1)) brdc_iod = nav->eph[i].iodc;
         // IGS-SSR scenario: IODE from ephemeris for IGS-SSR IODE comparison  
-        if (PPP_Glo.BDS_CNV1_flag == 0) brdc_iod = nav->eph[i].iode;
+        else brdc_iod = nav->eph[i].iode;
         
 		if (nav->eph[i].sat != sat) continue;
 		if (iode >= 0 && brdc_iod != iode) continue;
@@ -839,9 +837,16 @@ static int ephpos(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     }
     if (sys==SYS_GPS||sys==SYS_GAL||sys==SYS_QZS||sys==SYS_CMP && PPP_Glo.BDS_CNV1_flag == 0||sys==SYS_IRN) {
         if (!(eph=seleph(teph,sat,iode,nav))) return 0;
-        eph2pos(time,eph,rs,dts,var);
-        time=timeadd(time,tt);
-        eph2pos(time,eph,rst,dtst,var);
+        if (sys==SYS_CMP && eph->flag==BDS_NAV_KXW_CNV1) {
+            CNAV1eph2pos(time,eph,rs,dts,var);
+            time=timeadd(time,tt);
+            CNAV1eph2pos(time,eph,rst,dtst,var);
+        }
+        else {
+            eph2pos(time,eph,rs,dts,var);
+            time=timeadd(time,tt);
+            eph2pos(time,eph,rst,dtst,var);
+        }
         *svh=eph->svh;
     }
     else if (sys == SYS_CMP && PPP_Glo.BDS_CNV1_flag == 1) {
@@ -895,14 +900,21 @@ static int ephpos_otp(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
 
     if (sys==SYS_GPS||sys==SYS_GAL||sys==SYS_QZS||sys==SYS_CMP && PPP_Glo.BDS_CNV1_flag == 0||sys==SYS_IRN) {
         if (!(eph=seleph(teph,sat,iode,nav))) return 0;
-        eph2pos(time,eph,rs,dts,var);
-        time=timeadd(time,tt);
-        eph2pos(time,eph,rst,dtst,var);
+        if (sys==SYS_CMP && eph->flag==BDS_NAV_KXW_CNV1) {
+            CNAV1eph2pos(time,eph,rs,dts,var);
+            time=timeadd(time,tt);
+            CNAV1eph2pos(time,eph,rst,dtst,var);
+        }
+        else {
+            eph2pos(time,eph,rs,dts,var);
+            time=timeadd(time,tt);
+            eph2pos(time,eph,rst,dtst,var);
+        }
         *svh=eph->svh;
     }
-    // /* Liu@APM:BDS CNAV1����������� */
+    // /* Liu@APM:BDS CNAV1星历计算入口 */
     else if (sys == SYS_CMP && PPP_Glo.BDS_CNV1_flag == 1) {
-        //�����iode��B2b�е���ʵ�������õ�iodn
+        //这里的iode在B2b中调用实际上是用的iodn
         if (!(eph=seleph(teph,sat,iode,nav))) return 0;
         CNAV1eph2pos(time,eph,rs,dts,var);
         // CSDNCNAV1eph2pos(time,eph,rs,dts,var);
@@ -1091,7 +1103,7 @@ static int satpos_B2b(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     char time_str2[64];
     strcpy(time_str1, time_str(time, 0));
     strcpy(time_str2, time_str(B2bssr->t0[2], 3));
-    trace(2, "satpos_B2b: %s sat=%2d t0=%s \n", time_str1, sat, time_str2);
+    trace(2, "satpos_B2b: %s sat=%2d t0=%s \n", 0, sat, time_str2);
 
     
     /* inconsistency between orbit and clock correction */
@@ -1103,8 +1115,14 @@ static int satpos_B2b(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     }
     t1=timediff(time,B2bssr->t0[0]);  // ORB
     t2=timediff(time,B2bssr->t0[2]);  // CLK
-    trace(2,"out age of ssr: %s sat=%2d t=%.0f %.0f\n",time_str(time,0),
-              sat,t1,t2);
+
+
+    char s_time[64], s_orbit[64], s_clock[64];
+    time2str(time, s_time, 2);
+    time2str(B2bssr->t0[0], s_orbit, 2);
+    time2str(B2bssr->t0[2], s_clock, 2);
+    trace(2, "satpos_B2b: age of ssr:%s sat=%2d t_orbit=%s %.0f t_clock=%s %.0f\n",
+        s_time, sat, s_orbit, t1, s_clock, t2);
     
     /* ssr orbit and clock correction (ref [4]) */
     if (fabs(t1)>B2beph_MAXAGESSR||fabs(t2)>B2bclk_MAXAGESSR) {
@@ -1178,8 +1196,8 @@ static int satpos_B2b(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     /* variance by ssr ura */
     *var=var_uraB2b(B2bssr->ura);
     
-    trace(2,"satpos_B2b: %s sat=%2d deph=%6.3f %6.3f %6.3f er=%6.3f %6.3f %6.3f dclk=%6.3f var=%6.3f\n",
-          time_str(time,2),sat,deph[0],deph[1],deph[2],er[0],er[1],er[2],dclk,*var);
+    trace(2,"satpos_B2b: %s sat=%2d deph=%6.3f %6.3f %6.3f er=%6.3f %6.3f %6.3f dclk=%6.3f var=%6.3f dts=%.6f\n",
+          time_str(time,2),sat,deph[0],deph[1],deph[2],er[0],er[1],er[2],dclk,*var, dts[0]*CLIGHT);
     
     return 1;
 }
@@ -1328,7 +1346,7 @@ static int satpos_B2b_otp(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
         // *svh=-1;
         return 0;
     }
-    // ��һ����Ҫ��
+    // 这一步需要吗？
     if (B2bssr->udi[0]>=1.0) t1-=B2bssr->udi[0]/2.0;
     if (B2bssr->udi[2]>=1.0) t2-=B2bssr->udi[2]/2.0;
 
@@ -1532,8 +1550,9 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
             dts[1+i*2]=0.0;
             *var=SQR(STD_BRDCCLK);
         }
-        trace(4,"satposs: %d,time=%.9f dt=%.9f pr=%.3f rs=%13.3f %13.3f %13.3f dts=%12.3f var=%7.3f\n",
-            obs[i].sat,time[i].sec,dt,pr,rs[i*6],rs[1+i*6],rs[2+i*6],dts[i*2]*1E9,
+        char id[4]; satno2id(obs[i].sat, id);
+        trace(3, "satposs: %d-%s,time=%.9f dt=%.9f pr=%.3f rs=%13.3f %13.3f %13.3f dts=%12.3f var=%7.3f\n",
+            obs[i].sat, id, time[i].sec, dt, pr, rs[i * 6], rs[1 + i * 6], rs[2 + i * 6], dts[i * 2] * CLIGHT,
             var[i]);
 
     }
@@ -1569,74 +1588,82 @@ extern void satposs_otp(char *stationname, gtime_t teph, const nav_t *nav,
     FILE *fp_sp3;
     char id[32];
     char doy_str[8];
-    struct stat buffer;
-    double dt,pr,gps_second;
-    int i,j,gps_week,doy;
-    double current_time[6];
 
     if (!sp3init_flag) {
-        doy = time2doy(teph);
-        snprintf(sp3file, sizeof(sp3file), "%s.sp3", stationname);
-        sp3init_flag = 1;
+    int doy = time2doy(teph);
+    // snprintf(sp3file, sizeof(sp3file), "%s%d.sp3", stationname, doy);
+    snprintf(sp3file, sizeof(sp3file), "%s.sp3", stationname);
+    sp3init_flag = 1;
     }
-
+    
+    struct stat buffer; // 用于存储文件状态信息
+    // int exist;
+    double dt,pr,gps_second;
+    int i,j,gps_week;
+    double current_time[6];
     time2epoch(teph,current_time);
     gps_second = time2gpst(teph,&gps_week);
 
     trace(3,"satposs : teph=%s n=%d ephopt=%d\n",time_str(teph,3),ephopt);
 
-    /* Check if file exists and choose open mode */
+    // 检查文件是否存在
+    // exist = stat(sp3file, &buffer);
+
+    // 根据文件是否存在选择打开模式
     if (sp3continue_flag == 1) {
-        fp_sp3 = fopen(sp3file, "a");
+        fp_sp3 = fopen(sp3file, "a"); // 打开文件追加数据
     } else {
-        fp_sp3 = fopen(sp3file, "w");
+        // 文件不存在
+        fp_sp3 = fopen(sp3file, "w"); // 创建并写入新文件
         sp3continue_flag = 1;
         if (!fp_sp3) {
             perror("Failed to open file");
             return;
         }
-        /* Write SP3 file header */
+        // 写入SP3文件头部
         fprintf(fp_sp3, "#dP");
         fprintf(fp_sp3, "%4d%3d%3d%3d%3d%12.8f\n", (int)current_time[0], (int)current_time[1], (int)current_time[2],
-        (int)current_time[3], (int)current_time[4], current_time[5]);
+		(int)current_time[3], (int)current_time[4], current_time[5]);
         fprintf(fp_sp3, "##");
-        fprintf(fp_sp3, "%5d%16.8f%15.8f\n", gps_week, gps_second, (float)sampling);
+	    fprintf(fp_sp3, "%5d%16.8f%15.8f\n", gps_week, gps_second, (float)sampling);
     }
 
-    if((int)current_time[5]%sampling == 0) {
-        fprintf(fp_sp3, "*  ");
-        fprintf(fp_sp3, "%4d%3d%3d%3d%3d%12.8f\n", (int)current_time[0], (int)current_time[1], (int)current_time[2],
-        (int)current_time[3], (int)current_time[4], current_time[5]);
+    if((int)current_time[5]%sampling == 0)
+    {
+    fprintf(fp_sp3, "*  ");
+	fprintf(fp_sp3, "%4d%3d%3d%3d%3d%12.8f\n", (int)current_time[0], (int)current_time[1], (int)current_time[2], 
+    (int)current_time[3], (int)current_time[4], current_time[5]);
 
-        for (i = 0; i < MAXSAT; i++) {
-            for (j = 0; j < 6; j++) rs[j+i*6] = 0.0;
-            for (j = 0; j < 2; j++) dts[j+i*2] = 0.0;
-            var[i] = 0.0; svh[i] = 0;
+    for (i = 0; i < MAXSAT; i++) {
+        for (j = 0; j < 6; j++) rs[j+i*6] = 0.0;
+        for (j = 0; j < 2; j++) dts[j+i*2] = 0.0;
+        var[i] = 0.0; svh[i] = 0;
 
-            if (!satpos_otp(teph, teph, i, ephopt, nav, rs + i * 6, dts + i * 2, var + i, svh + i)) {
-                trace(3, "no ephemeris %s sat=%2d\n", time_str(teph,3), i);
-                continue;
-            }
-
-            if (dts[i*2] == 0.0) {
-                if (!ephclk(teph, teph, i, nav, dts + i * 2)) continue;
-                dts[1+i*2] = 0.0;
-                var[i] = SQR(STD_BRDCCLK);
-            }
-            satno2id(i,id);
-
-            /* Format and write satellite data */
-            fprintf(fp_sp3, "P%s %14.6f %14.6f %14.6f %14.6f\n",
-            id,
-            rs[i*6] / 1000.0,
-            rs[1+i*6] / 1000.0,
-            rs[2+i*6] / 1000.0,
-            dts[i*2] * 1000000.0);
+        if (!satpos_otp(teph, teph, i, ephopt, nav, rs + i * 6, dts + i * 2, var + i, svh + i)) {
+            trace(3, "no ephemeris %s sat=%2d\n", time_str(teph,3), i);
+            continue;
         }
+
+        if (dts[i*2] == 0.0) {
+            if (!ephclk(teph, teph, i, nav, dts + i * 2)) continue;
+            dts[1+i*2] = 0.0;
+            var[i] = SQR(STD_BRDCCLK);
+        }
+        satno2id(i,id);
+
+        // 格式化并写入每颗卫星的数据
+        fprintf(fp_sp3, "P%s %14.6f %14.6f %14.6f %14.6f\n",
+        id,
+        rs[i*6] / 1000.0,        // 将米转换为公里
+        rs[1+i*6] / 1000.0,      // 将米转换为公里
+        rs[2+i*6] / 1000.0,      // 将米转换为公里
+        dts[i*2] * 1000000.0);   // 将秒转换为微秒
+    }
     }
 
-    /* fflush(fp_sp3); */
-    fclose(fp_sp3);
+    // fprintf(fp, "EOF\n");
+    fflush(fp_sp3);
+    fclose(fp_sp3); // 关闭文件
 }
 
 /* set selected satellite ephemeris --------------------------------------------

@@ -1,0 +1,15 @@
+add_executable(test_bds_signal test_bds_signal.c)
+target_link_libraries(test_bds_signal PRIVATE B2bLib)
+add_test(NAME bds_signal COMMAND test_bds_signal)
+add_executable(test_if1213 test_if1213.c)
+target_link_libraries(test_if1213 PRIVATE B2bLib)
+add_test(NAME if1213 COMMAND test_if1213)
+add_executable(inspect_gal_input inspect_gal_input.c)
+target_link_libraries(inspect_gal_input PRIVATE B2bLib)
+
+add_executable(test_kxw test_kxw.c)
+target_link_libraries(test_kxw PRIVATE B2bLib)
+add_test(NAME kxw COMMAND test_kxw)
+
+add_executable(inspect_kxw_input inspect_kxw_input.c)
+target_link_libraries(inspect_kxw_input PRIVATE B2bLib)

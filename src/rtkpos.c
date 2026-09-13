@@ -225,7 +225,7 @@ extern int rtkoutstat(rtk_t *rtk, int level, char *buff)
 
     ssat_t *ssat;
     double pos[3],vel[3],acc[3],vela[3]={0},acca[3]={0},xa[3];
-    int week,nf=NF(&rtk->opt);
+    int week,nf=rtk->opt.if_model?(rtk->opt.if_model==1?2:1):NF(&rtk->opt);
     char id[8],*p=buff;
     double azel[MAXSAT*2],dop[4]={0};
     int valid_sat_count = 0;
@@ -316,7 +316,7 @@ extern int rtkoutstat(rtk_t *rtk, int level, char *buff)
     for (int i=0;i<MAXSAT;i++) {
         ssat=rtk->ssat+i;
         if (!ssat->vs) continue;
-        if (!ssat->vsat[0]) continue;
+        if (!ssat->vsat[0]&&!(rtk->opt.if_model==1&&ssat->vsat[1])) continue;
 
         azel[valid_sat_count * 2] = ssat->azel[0];
         azel[valid_sat_count * 2 + 1] = ssat->azel[1];
@@ -324,11 +324,13 @@ extern int rtkoutstat(rtk_t *rtk, int level, char *buff)
 
         satno2id(i+1,id);
         for (int j=0;j<nfreq;j++) {
-            int k=IB(i+1,j,&rtk->opt);
+            int k=rtk->opt.mode>=PMODE_PPP_KINEMA?
+                pppnx(&rtk->opt)-nf*MAXSAT+j*MAXSAT+i:IB(i+1,j,&rtk->opt);
             p+=sprintf(p,"$SAT,%s,%s,%d,%.1f,%.1f,%.4f,%.4f,%d,%.0f,%d,%d,%d,%u,%u,%u,%.2f,%.6f,%.5f\n",
                        sol_time_str,id,j+1,ssat->azel[0]*R2D,ssat->azel[1]*R2D,
                        ssat->resp[j],ssat->resc[j],ssat->vsat[j],ssat->snr_rover[j]*SNR_UNIT,
-                       ssat->fix[j],ssat->slip[j]&3,ssat->lock[j],ssat->outc[j],
+                       ssat->fix[j],rtk->opt.if_model?
+                       (ssat->if_slip[j]||ssat->slip[0]||ssat->slip[j+1]):(ssat->slip[j]&3),ssat->lock[j],ssat->outc[j],
                        ssat->slipc[j],ssat->rejc[j],k<rtk->nx?rtk->x[k]:0,
                        k<rtk->nx?rtk->P[k+k*rtk->nx]:0,ssat->icbias[j]);
         }
@@ -373,7 +375,8 @@ static void outsolstat(rtk_t *rtk,const nav_t *nav)
     swapsolstat();
 
     /* write solution status */
-    char buff[2*MAXSOLMSG+1];
+    /* Status contains per-satellite, per-combination records, not one solution. */
+    char buff[4096+MAXSAT*NFREQ*512];
     int n=rtkoutstat(rtk,statlevel,buff);
     buff[n]='\0';
     
@@ -2185,12 +2188,16 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
 *-----------------------------------------------------------------------------*/
 extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
 {
+    prcopt_t normalized=*opt;char msg[128];
     sol_t sol0={{0}};
     ambc_t ambc0={{{0}}};
     ssat_t ssat0={0};
     int i;
 
     trace(3,"rtkinit :\n");
+
+    if (!if_options_normalize(&normalized,msg)) normalized.if_model=-1;
+    opt=&normalized;
 
     rtk->sol=sol0;
     for (i=0;i<6;i++) rtk->rb[i]=0.0;
@@ -2289,12 +2296,19 @@ extern void rtkfree(rtk_t *rtk)
 *-----------------------------------------------------------------------------*/
 extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
+    obsd_t selected[MAXOBS*2];
     prcopt_t *opt=&rtk->opt;
     sol_t solb={{0}};
     gtime_t time;
     int i,nu,nr;
     char msg[128]="";
     char temp_stationname[256];
+
+    if (n<=0||n>MAXOBS*2||!bds_options_valid(opt,msg)) return 0;
+    if (opt->bds_if) {
+        bds_select_obs_ex(obs,selected,n,opt);
+        obs=selected;
+    }
 
     double temp[] = {2024,9,15,1,59,30};
 

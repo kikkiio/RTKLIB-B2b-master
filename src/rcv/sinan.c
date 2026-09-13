@@ -33,44 +33,8 @@
 #define GPSEPHEM 71
 #define BD3EPHEM 72
 
-/* KXW/SSR outer frame and standard PPP-B2b page layout. */
-#define SSR3PREAMB               0xD3
-#define KXW_PPPB2B_MSG_ID        0x40
-#ifndef KXW_PPPB2B_PAGE_OFFSET
-#define KXW_PPPB2B_PAGE_OFFSET   6
-#endif
-#define PPPB2B_PREAMBLE           0xEB90
-#define PPPB2B_DATA_BITS          456
-#define PPPB2B_CRC_BITS            24
-#define PPPB2B_MESSAGE_BITS       (6+PPPB2B_DATA_BITS+PPPB2B_CRC_BITS)
-#define PPPB2B_CRC_INPUT_BITS     (6+PPPB2B_DATA_BITS)
-#define PPPB2B_PACKED_BITS        512
-#define PPPB2B_PACKED_BYTES       (PPPB2B_PACKED_BITS/8)
-#define PPPB2B_INFO_BITS          (6+6+6+PPPB2B_DATA_BITS)
-#define RTCM_PRIVATE_TYPE         4047
-#define RTCM_PPPB2B_SUBTYPE       64
-#define RTCM_PPPB2B_PRN_OFFSET    7
-#define RTCM_PPPB2B_RSV_OFFSET    8
-#define RTCM_PPPB2B_TYPE_OFFSET   9
-#define RTCM_PPPB2B_BODY_OFFSET  10
-
 static uint16_t U2(uint8_t *p) {uint16_t u; memcpy(&u,p,2); return u;}
 static uint32_t U4(uint8_t *p) {uint32_t u; memcpy(&u,p,4); return u;}
-
-/* CRC24Q over arbitrary MSB-first bits. PPP-B2b protects the non-byte-aligned
- * MesTypeID(6)+data(456) block. */
-static uint32_t crc24q_bits(const uint8_t *buff, int pos, int len)
-{
-    uint32_t crc=0,feedback;
-    int i;
-
-    for (i=0;i<len;i++) {
-        feedback=((crc>>23)&1u)^getbitu(buff,pos+i,1);
-        crc=(crc<<1)&0xFFFFFFu;
-        if (feedback) crc^=0x864CFBu;
-    }
-    return crc;
-}
 
 B2bmask_t sinan_mask ={
     .MASK_BD = {0},
@@ -82,29 +46,6 @@ B2bmask_t sinan_mask ={
     .satnum = -1,
     .satno = {0}
 };
-
-/* A recorded RTCM stream can interleave pages broadcast by several PPP-B2b
- * GEO satellites.  Their IOD transitions are not necessarily simultaneous,
- * so sharing the receiver-specific sinan_mask would incorrectly reject valid
- * type 2/3/4 pages when another broadcaster changes its mask first. */
-static B2bmask_t rtcm_b2b_mask[64];
-static int rtcm_b2b_mask_initialized = 0;
-
-static B2bmask_t *get_rtcm_b2b_mask(uint32_t prn)
-{
-    int i;
-
-    if (prn < 1 || prn > 63) return NULL;
-    if (!rtcm_b2b_mask_initialized) {
-        memset(rtcm_b2b_mask, 0, sizeof(rtcm_b2b_mask));
-        for (i = 0; i < 64; i++) {
-            rtcm_b2b_mask[i].IOD_SSR = -1;
-            rtcm_b2b_mask[i].IODP = -1;
-        }
-        rtcm_b2b_mask_initialized = 1;
-    }
-    return &rtcm_b2b_mask[prn];
-}
 
 /* sync header ---------------------------------------------------------------*/
 static int sync_sinan(uint8_t *buff, uint8_t data)
@@ -165,9 +106,8 @@ static int process_message_type_1(raw_t *raw, int* pose)
 
     num = mask2satno(&sinan_mask);
 
-    /* Reserved fields are longer than the 32-bit getbitu() return type. */
-    *pose += 81;
-    *pose += 174;
+    uint64_t MASK_reserve = getbitu(buffer, *pose, 81); *pose += 81;
+    uint64_t reserve_type1 = getbitu(buffer, *pose, 174); *pose += 174;
 
     output_B2bInfo1(raw, &sinan_mask,udi);
     return 20;
@@ -284,6 +224,7 @@ static int process_message_type_3(raw_t *raw, int* pose)
         raw->nav.B2bssr[satno].verify_sow = verify_sow;
 
         uint32_t SigNum = getbitu(buffer, *pose, 4); *pose += 4;
+        memset(raw->nav.B2bssr[satno].cbias_valid,0,sizeof(raw->nav.B2bssr[satno].cbias_valid));
 
 
         for (int j = 0; j < SigNum; j++) {
@@ -299,6 +240,7 @@ static int process_message_type_3(raw_t *raw, int* pose)
             type = cods[mode];
             if (type == CODE_NONE) continue;
             raw->nav.B2bssr[satno].cbias[type] = DCB*0.017;
+            raw->nav.B2bssr[satno].cbias_valid[type] = 1;
             raw->nav.B2bssr[satno].update = 1;
         }
     }
@@ -372,156 +314,48 @@ static int process_message_type_4(raw_t *raw, int* pose)
     return 20;
 }
 
-/* decode one standard PPP-B2b information page -----------------------------
- * The 4047/64 body consists of sixteen little-endian uint32_t words. After
- * restoring each word, its first 486 bits exactly match the SIS message before
- * LDPC: MesTypeID(6)+data(456)+CRC24Q(24); the remaining 26 bits are padding.
- * The legacy receiver path passes only an already extracted 456-bit domain. */
-static int decode_PPPB2b_body(raw_t *raw, B2bmask_t *mask, uint32_t prn_6,
-                              uint32_t status_6, uint32_t mes_type, int pose,
-                              int endbit, int word_little_endian)
+/*H28*8---prn32---prn6---reserve6---mes_type6---data966---CRC32*/
+extern int decode_PPPB2b(raw_t *raw, int *pose, int geoprn, int mes_type)
 {
-    uint32_t crc_rx,crc_calc;
-    int i,n,srcbyte,srcbit,dstbyte,dstbit,message_end;
+    raw->geoprn = geoprn;
 
-    if (!raw||!mask||pose<0||
-        pose+(word_little_endian?PPPB2B_PACKED_BITS:PPPB2B_DATA_BITS)>endbit) {
-        trace(2,"PPP-B2b body length error: bitpos=%d endbit=%d\n",
-              pose,endbit);
-        return -1;
-    }
-    if (prn_6==0||prn_6>63||mes_type==0||mes_type>63) {
-        trace(2,"PPP-B2b header error: prn=%u type=%u body=%d\n",
-              prn_6,mes_type,pose);
-        return -1;
+    if (raw->geoprn == 62) {
+        char time_str[128];
+        time2str(raw->time, time_str, 3);
+        trace(22, "Skipping PRN 62 at time %s: mes_type = %u\n",
+              time_str, mes_type);
+        return 0;
     }
 
-    /* Build PRN(6)+status(6)+the standard 486-bit message after the complete
-     * source frame, leaving the two CRC-protected source layers untouched. */
-    dstbyte=raw->len+3;
-    if (dstbyte+(12+PPPB2B_MESSAGE_BITS+7)/8>MAXRAWLEN) return -1;
-    memset(raw->buff+dstbyte,0,(12+PPPB2B_MESSAGE_BITS+7)/8);
-    dstbit=dstbyte*8;
-    setbitu(raw->buff,dstbit,6,prn_6);
-    setbitu(raw->buff,dstbit+6,6,status_6&0x3Fu);
-
-    if (word_little_endian) {
-        if ((pose&7)||pose/8+PPPB2B_PACKED_BYTES>raw->len) return -1;
-        for (i=0;i<PPPB2B_MESSAGE_BITS;i++) {
-            n=i;
-            srcbyte=pose/8+(n/32)*4+3-(n%32)/8;
-            srcbit=n&7;
-            setbitu(raw->buff,dstbit+12+i,1,
-                    getbitu(raw->buff,srcbyte*8+srcbit,1));
-        }
-        if (getbitu(raw->buff,dstbit+12,6)!=mes_type) {
-            trace(2,"PPP-B2b message type mismatch: outer=%u inner=%u\n",
-                  mes_type,getbitu(raw->buff,dstbit+12,6));
-            return -1;
-        }
-        crc_rx=getbitu(raw->buff,dstbit+12+PPPB2B_CRC_INPUT_BITS,
-                       PPPB2B_CRC_BITS);
-        crc_calc=crc24q_bits(raw->buff,dstbit+12,PPPB2B_CRC_INPUT_BITS);
-        if (crc_rx!=crc_calc) {
-            trace(2,"PPP-B2b CRC24Q error: prn=%u type=%u recv=%06X calc=%06X\n",
-                  prn_6,mes_type,crc_rx,crc_calc);
-            return -1;
-        }
-        for (i=PPPB2B_MESSAGE_BITS;i<PPPB2B_PACKED_BITS;i++) {
-            n=i;
-            srcbyte=pose/8+(n/32)*4+3-(n%32)/8;
-            srcbit=n&7;
-            if (getbitu(raw->buff,srcbyte*8+srcbit,1)) {
-                trace(2,"PPP-B2b non-zero packing bit: prn=%u type=%u bit=%d\n",
-                      prn_6,mes_type,i-PPPB2B_MESSAGE_BITS);
-                break;
-            }
-        }
+    switch (mes_type) {
+        case 1:
+            raw->num_PPPB2BINF01++;
+            return process_message_type_1(raw, pose);
+        case 2:
+            raw->num_PPPB2BINF02++;
+            return process_message_type_2(raw, pose);
+        case 3:
+            raw->num_PPPB2BINF03++;
+            return process_message_type_3(raw, pose);
+        case 4:
+            raw->num_PPPB2BINF04++;
+            return process_message_type_4(raw, pose);
     }
-    else {
-        setbitu(raw->buff,dstbit+12,6,mes_type);
-        for (i=0;i<PPPB2B_DATA_BITS;i+=n) {
-            n=PPPB2B_DATA_BITS-i<24?PPPB2B_DATA_BITS-i:24;
-            setbitu(raw->buff,dstbit+18+i,n,getbitu(raw->buff,pose+i,n));
-        }
-    }
-    if (mes_type>4) return 0; /* reserved/null message; standard CRC checked */
-    message_end=word_little_endian?dstbit+12+PPPB2B_MESSAGE_BITS:
-                                   dstbit+PPPB2B_INFO_BITS;
-    return decode_B2b(raw,mask,dstbit,message_end);
+    return 1;
 }
 
-/* Decode the compact SIS page: PRN(6), reserved(6), type(6), body(456). */
-static int decode_PPPB2b_page(raw_t *raw, B2bmask_t *mask,
-                              int bitpos, int endbit)
+static int decode_B2b(raw_t *raw)
 {
-    uint32_t prn_6,status_6,mes_type;
-    int pose=bitpos;
 
-    if (!raw||bitpos<0||bitpos+PPPB2B_INFO_BITS>endbit) {
-        trace(2,"PPP-B2b page length error: bitpos=%d endbit=%d\n",
-              bitpos,endbit);
-        return -1;
-    }
-    prn_6=getbitu(raw->buff,pose,6); pose+=6;
-    status_6=getbitu(raw->buff,pose,6); pose+=6;
-    mes_type=getbitu(raw->buff,pose,6); pose+=6;
-    if (!mask) mask=get_rtcm_b2b_mask(prn_6);
-    return decode_PPPB2b_body(raw,mask,prn_6,status_6,mes_type,pose,endbit,0);
-}
+    int pose = SINAN_LEN*8;
+    // "PRN_32 and PRN_6 in the message should be consistent"? See "Sinan B2b Navigation Message Description - V1.0.pdf"
+    // Liu@APM: Actual testing shows inconsistency, so this check is canceled.
+    uint32_t prn_32 = getbitu(raw->buff, pose, 32); pose = pose + 32;
+    uint32_t prn_6 = getbitu(raw->buff, pose, 6); pose = pose + 6;
+    uint32_t reserve = getbitu(raw->buff, pose, 6); pose = pose + 6;
+    uint32_t mes_type = getbitu(raw->buff, pose, 6); pose = pose + 6;
 
-/* decode PPP-B2b page carried by a KXW D3/CRC24Q frame ---------------------
- * The complete outer frame must already be present in raw->buff and raw->len
- * must be the byte count from the D3 preamble through the payload (excluding
- * the three CRC bytes), as set by input_SSR(). */
-extern int decode_PPPB2b(raw_t *raw)
-{
-    int i,bitpos=-1,start=KXW_PPPB2B_PAGE_OFFSET;
-    uint32_t rtcm_type,subtype,prn_6,mes_type;
-
-    if (!raw||raw->len<=start) return -1;
-
-    if (raw->time.time==0) {
-        raw->time=utc2gpst(timeget());
-        trace(2,"PPP-B2b: receiver time unavailable, using system time\n");
-    }
-
-    /* RTKNAVI can record the correction stream in a byte-aligned private
-     * RTCM wrapper. Its payload is:
-     *
-     *   DF002=4047 (12), subtype=64 (12), version(8), PRN(8),
-     *   status/reserved(8), message-type(8), then the complete 486-bit
-     *   pre-LDPC SIS message packed in sixteen little-endian uint32_t words.
-     *
-     * The PRN/reserved/type fields are byte aligned and therefore must not be
-     * interpreted as the compact 6/6/6-bit SIS header. */
-    rtcm_type=getbitu(raw->buff,24,12);
-    subtype=getbitu(raw->buff,36,12);
-    if (rtcm_type==RTCM_PRIVATE_TYPE&&subtype==RTCM_PPPB2B_SUBTYPE&&
-        raw->len>=RTCM_PPPB2B_BODY_OFFSET+PPPB2B_PACKED_BYTES) {
-        prn_6=raw->buff[RTCM_PPPB2B_PRN_OFFSET];
-        mes_type=raw->buff[RTCM_PPPB2B_TYPE_OFFSET];
-        trace(3,"decode_PPPB2b: RTCM 4047/64 len=%d prn=%u type=%u\n",
-              raw->len,prn_6,mes_type);
-        return decode_PPPB2b_body(raw,get_rtcm_b2b_mask(prn_6),prn_6,
-                                  raw->buff[RTCM_PPPB2B_RSV_OFFSET],mes_type,
-                                  RTCM_PPPB2B_BODY_OFFSET*8,raw->len*8,1);
-    }
-
-    /* Prefer the standard 16-bit B2b preamble when it is present. */
-    for (i=start;i+1<raw->len;i++) {
-        if ((((uint16_t)raw->buff[i]<<8)|raw->buff[i+1])==PPPB2B_PREAMBLE) {
-            bitpos=(i+2)*8;
-            break;
-        }
-    }
-    /* Some receivers output the decoded page without its preamble. */
-    if (bitpos<0) bitpos=start*8;
-
-    trace(3,"decode_PPPB2b: len=%d bitpos=%d preamble=%s\n",
-          raw->len,bitpos,bitpos!=start*8?"yes":"no");
-
-    return decode_PPPB2b_page(raw,NULL,bitpos,raw->len*8);
+    return decode_PPPB2b(raw, &pose, (int)prn_6, (int)mes_type);
 }
 
 /* URA value (m) to URA index ------------------------------------------------*/
@@ -677,6 +511,7 @@ static int decode_BD3EPHEM(raw_t *raw) {
 
     eph.tgd[2] = data_BDSEPH.tgdB1Cp;
     eph.tgd[4] = data_BDSEPH.tgdB1Cd;
+    eph.tgd_valid = (1<<2)|(1<<4);
 
     if (!strstr(raw->opt, "-EPHALL")) {
         if (fabs(timediff(raw->nav.eph[sat - 1].toe, eph.toe)) < 1e-9 &&
@@ -732,20 +567,34 @@ static int decode_sino(raw_t *raw)
     }
 
 
+    int prev_inf01 = raw->num_PPPB2BINF01;
+    int prev_inf02 = raw->num_PPPB2BINF02;
+    int prev_inf03 = raw->num_PPPB2BINF03;
+    int prev_inf04 = raw->num_PPPB2BINF04;
+
     switch (type) {
-        case B2BRAWNAVSUBFRAMEb:
-            /* Sinan payload: 28-byte header + 32-bit receiver PRN tag, then
-             * the standard PPP-B2b page beginning at its 6-bit PRN. */
-            ret=decode_PPPB2b_page(raw,&sinan_mask,SINAN_LEN*8+32,
-                                   raw->len*8);
-            break;
+        case B2BRAWNAVSUBFRAMEb: ret = decode_B2b(raw); break;
         case GPSEPHEM:           ret = decode_GPSEPHEM(raw); break;
         case BD3EPHEM:           ret = decode_BD3EPHEM(raw); break;
 
     }
 
     if (ret >= 0) {
-        if(type == GPSEPHEM){
+        if (type == B2BRAWNAVSUBFRAMEb) {
+
+            if (raw->num_PPPB2BINF01 > prev_inf01) {
+                raw->raw_nmsg[0]++;  /* INFO1 */
+            } else if (raw->num_PPPB2BINF02 > prev_inf02) {
+                raw->raw_nmsg[1]++;  /* INFO2 */
+            } else if (raw->num_PPPB2BINF03 > prev_inf03) {
+                raw->raw_nmsg[2]++;  /* INFO3 */
+            } else if (raw->num_PPPB2BINF04 > prev_inf04) {
+                raw->raw_nmsg[3]++;  /* INFO4 */
+            } else {
+                raw->raw_nmsg[7]++;  /* B2b_Unknown */
+            }
+        }
+        else if(type == GPSEPHEM){
             raw->raw_nmsg[8]++;
         }
         else if(type == BD3EPHEM){
@@ -756,72 +605,11 @@ static int decode_sino(raw_t *raw)
     return ret;
 }
 
-/* input KXW D3/CRC24Q SSR stream -------------------------------------------*/
-extern int input_SSR(raw_t *raw, uint8_t data)
-{
-    int payload_len,ret;
-
-    if (!raw) return -1;
-    trace(5,"input_SSR: data=%02x\n",data);
-
-    /* synchronize frame */
-    if (raw->nbyte==0) {
-        if (data!=SSR3PREAMB) return 0;
-        raw->buff[raw->nbyte++]=data;
-        return 0;
-    }
-    if (raw->nbyte>=MAXRAWLEN) {
-        trace(2,"SSR frame overflow\n");
-        raw->nbyte=raw->len=0;
-        return -1;
-    }
-    raw->buff[raw->nbyte++]=data;
-
-    if (raw->nbyte==3) {
-        payload_len=getbitu(raw->buff,14,10);
-        raw->len=payload_len+3; /* bytes excluding the 3-byte CRC */
-        if (raw->len+3>MAXRAWLEN||raw->len<6) {
-            trace(2,"SSR length error: payload=%d total=%d\n",
-                  payload_len,raw->len+3);
-            raw->nbyte=raw->len=0;
-            return -1;
-        }
-    }
-    if (raw->nbyte<3||raw->nbyte<raw->len+3) return 0;
-
-    raw->nbyte=0;
-
-    /* check outer-frame parity */
-    if (rtk_crc24q(raw->buff,raw->len)!=
-        getbitu(raw->buff,raw->len*8,24)) {
-        trace(2,"SSR CRC24Q error: len=%d\n",raw->len);
-        return -1;
-    }
-    if (raw->buff[5]==KXW_PPPB2B_MSG_ID) {
-        /* decode_B2b returns its SIS message type (1..4), while RTKLIB raw
-         * decoder return values 1..4 mean observation/ephemeris/SBAS/etc.
-         * Normalize every decoded B2b page to the server's B2b update code. */
-        ret=decode_PPPB2b(raw);
-        return ret>0?20:ret;
-    }
-    trace(3,"SSR unsupported message id: 0x%02x\n",raw->buff[5]);
-    return 0;
-}
-
 
 /*H28*8---prn32---prn6---reserve6---mes_type6---data966---CRC32*/
 extern int input_sino(raw_t *raw, uint8_t data)
 {
     // trace(5,"input_sinan_B2b: data=%02x\n",data);
-
-    /* RTKNAVI records decoded PPP-B2b pages as D3/CRC24Q private RTCM
-     * frames (4047/64). Keep accepting the native Sinan receiver protocol,
-     * but dispatch a D3 frame to its dedicated parser before looking for the
-     * native receiver sync word. */
-    if ((raw->nbyte==0&&data==SSR3PREAMB)||
-        (raw->nbyte>0&&raw->buff[0]==SSR3PREAMB)) {
-        return input_SSR(raw,data);
-    }
     
     /* synchronize frame */
     if (raw->nbyte==0) {

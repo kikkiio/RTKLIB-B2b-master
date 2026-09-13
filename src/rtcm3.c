@@ -1994,7 +1994,7 @@ static void save_msm_obs(rtcm_t *rtcm, int sys, msm_h_t *h, const double *r,
         }
         /* signal to rinex obs type */
         code[i]=obs2code(sig[i]);
-        idx[i]=code2idx(sys,code[i]);
+        idx[i]=code2obsidx(sys,code[i],rtcm->opt);
         
         if (code[i]!=CODE_NONE) {
             if (q) q+=sprintf(q,"L%s%s",sig[i],i<h->nsig-1?",":"");
@@ -2530,7 +2530,11 @@ extern int decode_rtcm3(rtcm_t *rtcm)
         sprintf(rtcm->msgtype,"RTCM %4d (%4d):",type,rtcm->len);
     }
     /* real-time input option */
-    strcpy(rtcm->opt, "-RT_INP");
+    /* Keep the existing real-time time handling without erasing signal,
+     * station, or ephemeris-selection options on every message. */
+    if (!strstr(rtcm->opt,"-RT_INP")&&strlen(rtcm->opt)+8<sizeof(rtcm->opt)) {
+        strcat(rtcm->opt," -RT_INP");
+    }
     if (strstr(rtcm->opt,"-RT_INP")) {
         tow=time2gpst(utc2gpst(timeget()),&week);
         rtcm->time=gpst2time(week,floor(tow));

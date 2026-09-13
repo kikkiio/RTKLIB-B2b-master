@@ -194,7 +194,7 @@ static const char *pathopts[]={         /* path options help */
 #define FLGOPT  "0:off,1:std+2:age/ratio/ns"
 #define ISTOPT  "0:off,1:serial,2:file,3:tcpsvr,4:tcpcli,6:ntripcli,7:ftp,8:http"
 #define OSTOPT  "0:off,1:serial,2:file,3:tcpsvr,4:tcpcli,5:ntripsvr,9:ntripcas,11:udpcli"
-#define FMTOPT  "0:rtcm2,1:rtcm3,2:oem4,4:ubx,5:swift,6:hemis,7:skytraq,8:javad,9:nvs,10:binex,11:rt17,12:sbf,14,15:sp3"
+#define FMTOPT  "0:rtcm2,1:rtcm3,2:oem4,4:ubx,5:swift,6:hemis,7:skytraq,8:javad,9:nvs,10:binex,11:rt17,12:sbf,15:rinex,16:sp3,20:sino,21:unicore,22:kxw"
 #define NMEOPT  "0:off,1:latlon,2:single"
 #define SOLOPT  "0:llh,1:xyz,2:enu,3:nmea,4:stat"
 #define MSGOPT  "0:all,1:rover,2:base,3:corr"
@@ -387,9 +387,9 @@ static void readant(vt_t *vt, prcopt_t *opt, nav_t *nav)
     trace(3,"readant:\n");
     
     opt->pcvr[0]=opt->pcvr[1]=pcv0;
-    if (!*filopt.rcvantp) return;
+    /* Receiver and satellite calibration files are independent. */
     
-    if (readpcv(filopt.rcvantp,&pcvr)) {
+    if (*filopt.rcvantp&&readpcv(filopt.rcvantp,&pcvr)) {
         for (i=0;i<2;i++) {
             if (!*opt->anttype[i]) continue;
             if (!(pcv=searchpcv(0,opt->anttype[i],time,&pcvr))) {
@@ -399,7 +399,7 @@ static void readant(vt_t *vt, prcopt_t *opt, nav_t *nav)
             opt->pcvr[i]=*pcv;
         }
     }
-    else vt_printf(vt,"antenna file open error %s",filopt.rcvantp);
+    else if (*filopt.rcvantp) vt_printf(vt,"antenna file open error %s",filopt.rcvantp);
     
     if (readpcv(filopt.satantp,&pcvs)) {
         for (i=0;i<MAXSAT;i++) {
@@ -410,6 +410,86 @@ static void readant(vt_t *vt, prcopt_t *opt, nav_t *nav)
     else vt_printf(vt,"antenna file open error %s",filopt.satantp);
     
     free(pcvr.pcv); free(pcvs.pcv);
+}
+static void dump_pcvr_as_c(const prcopt_t* opt, const char* file)
+{
+    const int nf = NSYS_USED * NFREQ;
+    const int nv = 1600;
+    const pcv_t* pcv;
+    FILE* fp;
+    int r, f, i, j;
+
+    if (!opt || !(fp = fopen(file, "w"))) return;
+
+    fprintf(fp, "/* Generated receiver antenna PCV data */\n\n");
+
+    /* 输出两副接收机天线的 PCV 数组 */
+    for (r = 0; r < 2; r++) {
+        pcv = &opt->pcvr[r];
+
+        fprintf(fp,
+            "static double CORE_PCVR_VAR_%d"
+            "[NSYS_USED * NFREQ][1600] = {\n", r);
+
+        for (f = 0; f < nf; f++) {
+            fprintf(fp, "    {\n        ");
+
+            for (i = 0; i < nv; i++) {
+                double value = pcv->var ? pcv->var[f][i] : 0.0;
+
+                fprintf(fp, "%+.12g", value);
+
+                if (i != nv - 1) fprintf(fp, ", ");
+
+                if ((i + 1) % 8 == 0 && i != nv - 1) {
+                    fprintf(fp, "\n        ");
+                }
+            }
+            fprintf(fp, "\n    }%s\n", f == nf - 1 ? "" : ",");
+        }
+        fprintf(fp, "};\n\n");
+    }
+
+    fprintf(fp, "static pcv_t CORE_PCVR[2] = {\n");
+
+    for (r = 0; r < 2; r++) {
+        pcv = &opt->pcvr[r];
+
+        fprintf(fp, "    {\n");
+        fprintf(fp, "        .sat = %d,\n", pcv->sat);
+        fprintf(fp, "        .type = \"%s\",\n", pcv->type);
+        fprintf(fp, "        .code = \"%s\",\n", pcv->code);
+
+        fprintf(fp,
+            "        .ts = { (time_t)%lld, %.17g },\n",
+            (long long)pcv->ts.time, pcv->ts.sec);
+
+        fprintf(fp,
+            "        .te = { (time_t)%lld, %.17g },\n",
+            (long long)pcv->te.time, pcv->te.sec);
+
+        fprintf(fp, "        .off = {\n");
+
+        for (i = 0; i < nf; i++) {
+            fprintf(fp,
+                "            { %+.12g, %+.12g, %+.12g }%s\n",
+                pcv->off[i][0],
+                pcv->off[i][1],
+                pcv->off[i][2],
+                i == nf - 1 ? "" : ",");
+        }
+
+        fprintf(fp, "        },\n");
+        fprintf(fp, "        .var = CORE_PCVR_VAR_%d,\n", r);
+        fprintf(fp, "        .dazi = %.17g,\n", pcv->dazi);
+        fprintf(fp, "        .zen1 = %.17g,\n", pcv->zen1);
+        fprintf(fp, "        .zen2 = %.17g,\n", pcv->zen2);
+        fprintf(fp, "        .dzen = %.17g\n", pcv->dzen);
+        fprintf(fp, "    }%s\n", r == 1 ? "" : ",");
+    }
+
+    fprintf(fp, "};\n");
+    fclose(fp);
 }
 /* start rtk server ----------------------------------------------------------*/
 static int startsvr(vt_t *vt)
@@ -456,7 +536,8 @@ static int startsvr(vt_t *vt)
     
     /* read antenna file */
     readant(vt,&prcopt,&svr.nav);
-    
+    //dump_pcvr_as_c(&prcopt, "pcvr_dump.c");
+
     /* read dcb file */
     if (*filopt.dcb) {
         strcpy(sta[0].name,sta_name);
@@ -508,7 +589,8 @@ static int startsvr(vt_t *vt)
                      (const char **)cmds,(const char **)cmds_periodic,(const char **)ropts,nmeacycle,nmeareq,npos,&prcopt,
                      solopt,&moni,errmsg)) {
         trace(2,"rtk server start error (%s)\n",errmsg);
-        vt_printf(vt,"rtk server start error (%s)\n",errmsg);
+        if (vt) vt_printf(vt,"rtk server start error (%s)\n",errmsg);
+        else fprintf(stderr,"rtk server start error (%s)\n",errmsg);
         return 0;
     }
     return 1;
@@ -672,7 +754,7 @@ static void prstatus(vt_t *vt)
 
     const char *strfmt_str[] = {
     "rtcm2", "rtcm3", "oem4",    "", "ubx", "sbp", "cres", "stq", "javad", "nvs", "binex",
-    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore"
+    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore", "kxw"
     };
 
     const char *ephopt_str[] = {
@@ -735,9 +817,9 @@ static void prstatus(vt_t *vt)
     }
     dops(n,azel,0.0,dop);
 
-    const char *rover_fmt = (strfmt[0] >= 0 && strfmt[0] < 22) ? strfmt_str[strfmt[0]] : "Unknown";
-    const char *base_fmt = (strfmt[1] >= 0 && strfmt[1] < 22) ? strfmt_str[strfmt[1]] : "Unknown";
-    const char *corr_fmt = (strfmt[2] >= 0 && strfmt[2] < 22) ? strfmt_str[strfmt[2]] : "Unknown";
+    const char *rover_fmt = (strfmt[0] >= 0 && strfmt[0] < 23) ? strfmt_str[strfmt[0]] : "Unknown";
+    const char *base_fmt = (strfmt[1] >= 0 && strfmt[1] < 23) ? strfmt_str[strfmt[1]] : "Unknown";
+    const char *corr_fmt = (strfmt[2] >= 0 && strfmt[2] < 23) ? strfmt_str[strfmt[2]] : "Unknown";
     const char *ephopt = (rtk.opt.sateph >= 0 && rtk.opt.sateph <= 5) ? ephopt_str[rtk.opt.sateph] : "Unknown";
     
     vt_printf(vt,"\n%s%-28s: %s%s\n",ESC_BOLD,"Parameter","Value",ESC_RESET);
@@ -982,7 +1064,7 @@ static void prstream(vt_t *vt)
     };
     const char *fmt[]={
     "rtcm2", "rtcm3", "oem4",    "", "ubx", "sbp", "cres", "stq", "javad", "nvs", "binex",
-    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore"
+    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore", "kxw"
     };
     const char *sol[]={"llh","xyz","enu","nmea","stat","-"};
     stream_t stream[9];
@@ -1781,6 +1863,7 @@ static void print_filopt(const filopt_t *fopt, FILE *file) {
     fprintf(file, "Solution Statistics File: %s\n", fopt->solstat);
     fprintf(file, "Ionosphere Data File: %s\n", fopt->iono);
     fprintf(file, "Debug Trace File: %s\n", fopt->trace);
+    fprintf(file, "Daily Trace Swap: %d\n", fopt->trace_daily);
     fprintf(file, "DCB Data File: %s\n", fopt->dcb);
     fprintf(file, "SAT ANT File: %s\n", fopt->satantp);
     fprintf(file, "RCV ANT File: %s\n", fopt->rcvantp);
@@ -2096,7 +2179,7 @@ static void print_rt_options() {
 extern int app_rtkrcv(int argc, char **argv)
 {
     con_t *con[MAXCON]={0};
-    int i,port=0,outstat=0,B2btrace=22,trace=3,sock=0;
+    int i,port=0,outstat=0,B2btrace=22,trace=4,sock=0;
     char *dev="/dev/tty",file[MAXSTR]="";
     int deamon=0;
     
@@ -2124,10 +2207,11 @@ extern int app_rtkrcv(int argc, char **argv)
     load_config(file, &prcopt,solopt,&filopt);
     load_rt(file);
 
-    /* Open the configured trace file after loading file options. The command
-     * line -t option continues to control the trace level. */
+    /* Keep one trace file by default. Daily swapping must be explicitly
+     * enabled by filopt.trace_daily in the configuration file. */
+    tracesetdailyswap(filopt.trace_daily);
     if (trace>0) {
-        traceopen(*filopt.trace?filopt.trace:TRACEFILE);
+        traceopen(TRACEFILE);
         tracelevel(trace);
     }
 
@@ -2164,7 +2248,14 @@ extern int app_rtkrcv(int argc, char **argv)
         }
     }
     if (start&2) { /* Start without console */
-        startsvr(NULL); 
+        if (!startsvr(NULL)) {
+            if (moniport>0) closemoni();
+            if (outstat>0) rtkclosestat();
+            rtksvrfree(&svr);
+            traceclose();
+            B2b_traceclose();
+            return EXIT_FAILURE;
+        }
     } 
      else {
         /* open device for local console */
@@ -2196,22 +2287,8 @@ extern int app_rtkrcv(int argc, char **argv)
 #endif
 
     while (!intflg) {
-        int replay_files=0,replay_ended=0;
-
         /* accept remote console connection */
         accept_sock(sock,con);
-
-        /* A non-interactive file replay has no console from which to issue
-         * shutdown. Exit cleanly after every configured input file reaches
-         * EOF so solution, trace and navigation files are flushed. */
-        if (start&2) {
-            for (i=0;i<3;i++) {
-                if (strtype[i]!=STR_FILE) continue;
-                replay_files++;
-                if (!strcmp(svr.stream[i].msg,"end")) replay_ended++;
-            }
-            if (replay_files>0&&replay_ended==replay_files) intflg=1;
-        }
         sleepms(100);
     }
     /* stop rtk server */

@@ -165,7 +165,7 @@ static const char *pathopts[]={         /* path options help */
 #define FLGOPT  "0:off,1:std+2:age/ratio/ns"
 #define ISTOPT  "0:off,1:serial,2:file,3:tcpsvr,4:tcpcli,6:ntripcli,7:ftp,8:http"
 #define OSTOPT  "0:off,1:serial,2:file,3:tcpsvr,4:tcpcli,5:ntripsvr,9:ntripcas,11:udpcli"
-#define FMTOPT  "0:rtcm2,1:rtcm3,2:oem4,4:ubx,5:swift,6:hemis,7:skytraq,8:javad,9:nvs,10:binex,11:rt17,12:sbf,14,15:sp3"
+#define FMTOPT  "0:rtcm2,1:rtcm3,2:oem4,4:ubx,5:swift,6:hemis,7:skytraq,8:javad,9:nvs,10:binex,11:rt17,12:sbf,15:rinex,16:sp3,20:sino,21:unicore,22:kxw"
 #define NMEOPT  "0:off,1:latlon,2:single"
 #define SOLOPT  "0:llh,1:xyz,2:enu,3:nmea,4:stat"
 #define MSGOPT  "0:all,1:rover,2:base,3:corr"
@@ -256,10 +256,8 @@ static void update_eph(rtksvr_t *svr, nav_t *nav, int ephsat, int ephset,
 
                 if (eph2->ttr.time==0||
                     (eph1->iode!=eph3->iode&&eph1->iode!=eph2->iode)||
-                    (timediff(eph1->toe,eph3->toe)!=0.0&&
-                 timediff(eph1->toe,eph2->toe)!=0.0)||
-                (timediff(eph1->toc,eph3->toc)!=0.0&&
-                 timediff(eph1->toc,eph2->toc)!=0.0)) {
+                    (timediff(eph1->toe,eph3->toe)!=0.0 && timediff(eph1->toe,eph2->toe)!=0.0)||
+                (timediff(eph1->toc,eph3->toc)!=0.0 && timediff(eph1->toc,eph2->toc)!=0.0)) {
                 *eph3=*eph2; /* current ->previous */
                 *eph2=*eph1; /* received->current */
                 }
@@ -477,7 +475,8 @@ static int decoderaw(rtksvr_t *svr, int index)
     for (i=0;i<svr->nb[index];i++) {
         
         /* input rtcm/receiver raw data from stream */
-        if (svr->format[index]==STRFMT_UNICORE || svr->format[index]==STRFMT_SINO) {
+        if (svr->format[index]==STRFMT_UNICORE || svr->format[index]==STRFMT_SINO ||
+            svr->format[index]==STRFMT_KXW) {
 			ret=input_raw(svr->raw+index,svr->format[index],svr->buff[index][i]);
             // obs=&svr->raw[index].obs;
             nav=&svr->raw[index].nav;
@@ -929,7 +928,7 @@ static void prstatus(vt_t *vt)
 
     const char *strfmt_str[] = {
     "rtcm2", "rtcm3", "oem4",    "", "ubx", "sbp", "cres", "stq", "javad", "nvs", "binex",
-    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore"
+    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore", "kxw"
     };
 
     const char *ephopt_str[] = {
@@ -993,8 +992,8 @@ static void prstatus(vt_t *vt)
     dops(n,azel,0.0,dop);
 
     // const char *rover_fmt = (strfmt[0] >= 0 && strfmt[0] < 22) ? strfmt_str[strfmt[0]] : "Unknown";
-    const char *base_fmt = (strfmt[1] >= 0 && strfmt[1] < 22) ? strfmt_str[strfmt[0]] : "Unknown";
-    const char *corr_fmt = (strfmt[2] >= 0 && strfmt[2] < 22) ? strfmt_str[strfmt[1]] : "Unknown";
+    const char *base_fmt = (strfmt[1] >= 0 && strfmt[1] < 23) ? strfmt_str[strfmt[0]] : "Unknown";
+    const char *corr_fmt = (strfmt[2] >= 0 && strfmt[2] < 23) ? strfmt_str[strfmt[1]] : "Unknown";
     const char *ephopt = (rtk.opt.sateph >= 0 && rtk.opt.sateph <= 5) ? ephopt_str[rtk.opt.sateph] : "Unknown";
     
     vt_printf(vt,"\n%s%-28s: %s%s\n",ESC_BOLD,"Parameter","Value",ESC_RESET);
@@ -1195,7 +1194,7 @@ static void prstream(vt_t *vt)
     };
     const char *fmt[]={
     "rtcm2", "rtcm3", "oem4",    "", "ubx", "sbp", "cres", "stq", "javad", "nvs", "binex",
-    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore"
+    "rt17",   "sept",     "",    "", "rinex", "sp3", "rnxclk", "sbas", "nmea", "sino", "unicore", "kxw"
     };
     const char *sol[]={"llh","xyz","enu","nmea","stat","-"};
     stream_t stream[9];

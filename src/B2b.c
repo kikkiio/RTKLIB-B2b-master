@@ -266,281 +266,6 @@ extern int mask2satno(B2bmask_t *B2bmask)
     return effect_num;
 }
 
-/* output Type 4 before a matching Type 1 mask is available -----------------
- * Type 4 addresses satellites by their ordinal position in the Type 1 mask.
- * Preserve the decoded values as INDEX records instead of inventing PRNs. */
-static void output_B2bClockIndex(raw_t *raw, gtime_t epoch, double udi,
-                                 int iodssr, int iodp, int subtype,
-                                 const int *iodcorr, const int *c0)
-{
-    double ep[6],rp[6];
-    int i,n=0;
-
-    for (i=0;i<23;i++) {
-        if (c0[i]>-16383&&(c0[i]!=0||iodcorr[i]!=0)) n++;
-    }
-    if (n<=0) return;
-    time2epoch(epoch,ep);
-    time2epoch(raw->time,rp);
-    B2b_trace(22,"> CLOCK_INDEX %04d %02d %02d %02d %02d %.1f %d %d "
-              "B2bSatPrn_%d IODSSR_%d IODP_%d SUBTYPE_%d @ "
-              "%04d %02d %02d %02d %02d %.1f\n",
-              (int)ep[0],(int)ep[1],(int)ep[2],(int)ep[3],(int)ep[4],ep[5],
-              (int)udi,n,raw->geoprn,iodssr,iodp,subtype,
-              (int)rp[0],(int)rp[1],(int)rp[2],(int)rp[3],(int)rp[4],rp[5]);
-    for (i=0;i<23;i++) {
-        if (c0[i]<=-16383||(c0[i]==0&&iodcorr[i]==0)) continue;
-        B2b_trace(22,"INDEX_%03d %5d %10.4f\n",
-                  subtype*23+i+1,iodcorr[i],c0[i]*0.0016);
-    }
-}
-
-/* decode one standard PPP-B2b information block ----------------------------
- * The receiver-specific frame, preamble, CRC and LDPC symbols are deliberately
- * outside this function. Its caller has already checked the standard CRC24Q;
- * this function consumes PRN/status/type and the 456 information bits defined
- * by the PPP-B2b SIS ICD.
- *
- * return : message type (1-4), 0 if the page belongs to an obsolete mask,
- *         -1 on malformed input
- *---------------------------------------------------------------------------*/
-extern int decode_B2b(raw_t *raw, B2bmask_t *mask, int bitpos, int endbit)
-{
-    const uint8_t *p;
-    B2bssr_t *ssr;
-    gtime_t epoch, old_mask_time;
-    gtime_t last_time[4];
-    double ep[6], udi;
-    uint32_t prn, type, sow, iodssr, iodp=0, nsat, nsig, mode;
-    int i, j, pos, body_end, slot, sat, sys, code, v1, v2, v3;
-    int clock_iodcorr[23],clock_c0[23];
-    int *codes=NULL;
-
-    if (!raw||!mask||bitpos<0||endbit<bitpos+18+456) return -1;
-    p=raw->buff;
-    pos=bitpos;
-    prn=getbitu(p,pos,6); pos+=6;
-    pos+=6;                              /* PPP service status/reserved */
-    type=getbitu(p,pos,6); pos+=6;
-    body_end=pos+456;
-    if (prn<1||prn>63||type<1||type>4||body_end>endbit) return -1;
-
-    raw->geoprn=(int)prn;
-    sow=getbitu(p,pos,17); pos+=17;
-    pos+=4;                              /* SSR update interval index */
-    iodssr=getbitu(p,pos,2); pos+=2;
-    epoch=B2btod2time(raw->time,(double)sow);
-    /* Keep the raw stream time aligned with the correction epoch. Recorded
-     * 4047/64 frames have no receiver header time of their own; the server
-     * uses raw->time to reject corrections older than the rover solution. */
-    raw->time=epoch;
-    time2epoch(epoch,ep);
-
-    if (type==1) {                       /* satellite mask */
-        old_mask_time=mask->time;
-        memcpy(last_time,mask->last_time,sizeof(last_time));
-        iodp=getbitu(p,pos,4); pos+=4;
-        memset(mask,0,sizeof(*mask));
-        memcpy(mask->last_time,last_time,sizeof(last_time));
-        mask->m_time=raw->time;
-        mask->time=epoch;
-        mask->IOD_SSR=(int)iodssr;
-        mask->IODP=(int)iodp;
-        for (i=0;i<63;i++) {mask->MASK_BD[i]=(int)getbitu(p,pos,1); pos++;}
-        for (i=0;i<37;i++) {mask->MASK_GPS[i]=(int)getbitu(p,pos,1); pos++;}
-        for (i=0;i<37;i++) {mask->MASK_GALILEO[i]=(int)getbitu(p,pos,1); pos++;}
-        for (i=0;i<37;i++) {mask->MASK_GLONASS[i]=(int)getbitu(p,pos,1); pos++;}
-        mask2satno(mask);
-        raw->num_PPPB2BINF01++;
-        raw->raw_nmsg[0]++;
-        output_B2bInfo1(raw,mask,old_mask_time.time?
-                        (int)timediff(epoch,old_mask_time):0);
-        mask->last_time[0]=epoch;
-        return 1;
-    }
-    /* Type 2/3 contain explicit SatSlot values and can be inspected before
-     * Type 1 arrives. Once a mask exists, enforce the IOD SSR association. */
-    if (mask->IOD_SSR>=0&&(int)iodssr!=mask->IOD_SSR) return 0;
-
-    if (type==2) {                       /* orbit and URA: six records */
-        udi=mask->last_time[1].time?timediff(epoch,mask->last_time[1]):0.0;
-        if (udi<0.0||udi>86400.0) udi=0.0;
-        for (i=0;i<6;i++) {
-            slot=(int)getbitu(p,pos,9); pos+=9;
-            v1=(int)getbitu(p,pos,10); pos+=10;       /* IODN */
-            v2=(int)getbitu(p,pos,3); pos+=3;         /* IOD Corr */
-            v3=getbits(p,pos,15); pos+=15;            /* radial */
-            j=getbits(p,pos,13); pos+=13;             /* along */
-            code=getbits(p,pos,13); pos+=13;          /* cross */
-            mode=(uint32_t)getbitu(p,pos,6); pos+=6;  /* URAI */
-            sat=slot2satno(slot);
-            if (sat<=0||sat>=MAXSAT||v3==-16384||j==-4096||code==-4096) continue;
-            /* B2bSSR storage in this project is indexed directly by RTKLIB
-             * satellite number (index 0 is unused), unlike nav.eph[]. */
-            ssr=&raw->nav.B2bssr[sat];
-            ssr->sow=(int)sow;
-            ssr->verify_sow=(int)(ep[3]*3600.0+ep[4]*60.0+ep[5]);
-            ssr->t0[0]=epoch;
-            ssr->udi[0]=udi;
-            ssr->iodssr[0]=(int)iodssr;
-            ssr->iodn=v1;
-            ssr->iodcorr[0]=(uint16_t)v2;
-            ssr->deph[0]=v3*0.0016;
-            ssr->deph[1]=j*0.0064;
-            ssr->deph[2]=code*0.0064;
-            ssr->ura=(int)mode;
-            ssr->update|=B2B_UPD_ORBIT|B2B_UPD_URA;
-        }
-        pos=body_end;                    /* 19 reserved bits */
-        raw->num_PPPB2BINF02++;
-        raw->raw_nmsg[1]++;
-        output_B2bInfo2(raw,&raw->nav);
-        mask->last_time[1]=epoch;
-        return 2;
-    }
-    if (type==3) {                       /* code bias */
-        udi=mask->last_time[2].time?timediff(epoch,mask->last_time[2]):0.0;
-        if (udi<0.0||udi>86400.0) udi=0.0;
-        nsat=getbitu(p,pos,5); pos+=5;
-        for (i=0;i<(int)nsat;i++) {
-            if (pos+13>body_end) return -1;
-            slot=(int)getbitu(p,pos,9); pos+=9;
-            nsig=getbitu(p,pos,4); pos+=4;
-            sat=slot2satno(slot);
-            codes=NULL;
-            if (sat>0&&sat<MAXSAT) {
-                sys=satsys(sat,NULL);
-                if      (sys==SYS_CMP) codes=b2b_bds_codebias_mode;
-                else if (sys==SYS_GPS) codes=b2b_gps_codebias_mode;
-                else if (sys==SYS_GAL) codes=b2b_gal_codebias_mode;
-                else if (sys==SYS_GLO) codes=b2b_glo_codebias_mode;
-                ssr=&raw->nav.B2bssr[sat];
-                memset(ssr->cbias,0,sizeof(ssr->cbias));
-            }
-            for (j=0;j<(int)nsig;j++) {
-                if (pos+16>body_end) return -1;
-                mode=getbitu(p,pos,4); pos+=4;
-                v1=getbits(p,pos,12); pos+=12;
-                if (!codes||mode>=B2B_CodeBiasModeNum||v1==-2048) continue;
-                code=codes[mode];
-                if (code>CODE_NONE&&code<=MAXCODE)
-                    ssr->cbias[code-1]=(float)(v1*0.017);
-            }
-            if (codes) {
-                ssr->sow=(int)sow;
-                ssr->verify_sow=(int)(ep[3]*3600.0+ep[4]*60.0+ep[5]);
-                ssr->t0[1]=epoch;
-                ssr->udi[1]=udi;
-                ssr->iodssr[1]=(int)iodssr;
-                ssr->update|=B2B_UPD_CBIAS;
-            }
-        }
-        raw->num_PPPB2BINF03++;
-        raw->raw_nmsg[2]++;
-        output_B2bInfo3(raw,&raw->nav);
-        mask->last_time[2]=epoch;
-        return 3;
-    }
-
-    iodp=getbitu(p,pos,4); pos+=4;       /* clock */
-    mode=getbitu(p,pos,5); pos+=5;       /* subtype */
-    if (mode>11) return 0;
-    udi=mask->last_time[3].time?timediff(epoch,mask->last_time[3]):0.0;
-    if (udi<0.0||udi>86400.0) udi=0.0;
-    if (mask->IOD_SSR<0) {
-        for (i=0;i<23;i++) {
-            clock_iodcorr[i]=(int)getbitu(p,pos,3); pos+=3;
-            clock_c0[i]=getbits(p,pos,15); pos+=15;
-        }
-        output_B2bClockIndex(raw,epoch,udi,(int)iodssr,(int)iodp,(int)mode,
-                             clock_iodcorr,clock_c0);
-        raw->num_PPPB2BINF04++;
-        raw->raw_nmsg[3]++;
-        mask->last_time[3]=epoch;
-        return 4;
-    }
-    if ((int)iodp!=mask->IODP) return 0;
-    for (i=0;i<23;i++) {
-        v1=(int)getbitu(p,pos,3); pos+=3;
-        v2=getbits(p,pos,15); pos+=15;
-        j=(int)mode*23+i;
-        /* The live stream uses the lower negative boundary as the explicit
-         * unavailable value (repeated -26.2128 m records). */
-        if (j>=mask->satnum||v2<=-16383) continue;
-        sat=mask->satno[j];
-        if (sat<=0||sat>=MAXSAT) continue;
-        ssr=&raw->nav.B2bssr[sat];
-        ssr->sow=(int)sow;
-        ssr->verify_sow=(int)(ep[3]*3600.0+ep[4]*60.0+ep[5]);
-        ssr->t0[2]=epoch;
-        ssr->udi[2]=udi;
-        ssr->iodssr[2]=(int)iodssr;
-        ssr->iodp[0]=(int)iodp;
-        ssr->iodcorr[1]=(uint16_t)v1;
-        ssr->dclk[0]=v2*0.0016;
-        ssr->dclk[1]=ssr->dclk[2]=0.0;
-        ssr->update|=B2B_UPD_CLOCK;
-    }
-    raw->num_PPPB2BINF04++;
-    raw->raw_nmsg[3]++;
-    output_B2bInfo4(raw,&raw->nav);
-    mask->last_time[3]=epoch;
-    return 4;
-}
-
-/* merge decoded PPP-B2b corrections ---------------------------------------*/
-extern int update_B2b(nav_t *nav, raw_t *raw)
-{
-    B2bssr_t *src, *dst;
-    double dt;
-    int i, j, n=0, changed;
-    uint8_t upd;
-
-    if (!nav||!raw) return -1;
-    for (i=0;i<MAXSAT;i++) {
-        src=&raw->nav.B2bssr[i];
-        dst=&nav->B2bssr[i];
-        upd=src->update;
-        changed=0;
-        if (!upd) continue;
-
-        if (upd&B2B_UPD_ORBIT) {
-            dt=dst->t0[0].time?timediff(src->t0[0],dst->t0[0]):0.0;
-            src->udi[0]=(dt>0.0&&dt<=86400.0)?dt:0.0;
-            dst->t0[0]=src->t0[0]; dst->udi[0]=src->udi[0];
-            dst->iodssr[0]=src->iodssr[0]; dst->iodn=src->iodn;
-            dst->iodcorr[0]=src->iodcorr[0]; dst->sow=src->sow;
-            dst->verify_sow=src->verify_sow;
-            for (j=0;j<3;j++) {dst->deph[j]=src->deph[j]; dst->ddeph[j]=src->ddeph[j];}
-            changed=1;
-        }
-        if (upd&B2B_UPD_URA) {dst->ura=src->ura; changed=1;}
-        if (upd&B2B_UPD_CBIAS) {
-            dt=dst->t0[1].time?timediff(src->t0[1],dst->t0[1]):0.0;
-            src->udi[1]=(dt>0.0&&dt<=86400.0)?dt:0.0;
-            dst->t0[1]=src->t0[1]; dst->udi[1]=src->udi[1];
-            dst->iodssr[1]=src->iodssr[1];
-            memcpy(dst->cbias,src->cbias,sizeof(dst->cbias));
-            changed=1;
-        }
-        if (upd&B2B_UPD_CLOCK) {
-            dt=dst->t0[2].time?timediff(src->t0[2],dst->t0[2]):0.0;
-            src->udi[2]=(dt>0.0&&dt<=86400.0)?dt:0.0;
-            dst->t0[2]=src->t0[2]; dst->udi[2]=src->udi[2];
-            dst->iodssr[2]=src->iodssr[2]; dst->iodp[0]=src->iodp[0];
-            dst->iodcorr[1]=src->iodcorr[1];
-            for (j=0;j<3;j++) dst->dclk[j]=src->dclk[j];
-            changed=1;
-        }
-        src->update=0;
-        dst->update=0;
-        if (changed) n++;
-    }
-    raw->num_PPPB2BINF01=raw->num_PPPB2BINF02=0;
-    raw->num_PPPB2BINF03=raw->num_PPPB2BINF04=0;
-    return n;
-}
-
 static int adjday_B2b(double H_sod, int H_doy, double D_sod){
     double tt= H_sod-D_sod;
     int D_doy;
@@ -669,7 +394,7 @@ extern int checkout_B2bclk(B2bssr_t *B2bssr0, B2bssr_t *B2bssr1) {
 
     if (B2bssr0->iodssr[2] != B2bssr1->iodssr[2]) {
         printf("Error: iodssr mismatch! B2bssr0->iodssr = %d, B2bssr1->iodssr = %d\n", 
-               B2bssr0->iodssr[2], B2bssr1->iodssr[2]);
+               B2bssr0->iodssr[1], B2bssr1->iodssr[1]);
         return 0;
     }
     if (B2bssr0->iodcorr[1] != B2bssr1->iodcorr[1]) {
@@ -811,8 +536,9 @@ extern void output_B2bInfo1(raw_t *raw, const B2bmask_t *mask, int udi) {
 // Output B2b orbit and URAI information
 extern void output_B2bInfo2(raw_t *raw, nav_t *nav) {
     char satid[16];
-    double t_epoch[6] = {0}, m_epoch[6];
-    int udi = 0, satnum = 0;
+    double t_epoch[6], m_epoch[6];
+    int year, month, day, hour, min, udi, satnum = 0;
+    double sec;
     gtime_t t_time;
 
     // Get current time
@@ -823,11 +549,10 @@ extern void output_B2bInfo2(raw_t *raw, nav_t *nav) {
         const B2bssr_t *b2b = &nav->B2bssr[i];
         if (b2b->update == 0) continue;
         satnum++;
-        udi = (int)b2b->udi[0];  // Update interval for orbit correction
+        udi = b2b->udi[0];  // Update interval for orbit correction
         t_time = b2b->t0[0];  // Reference time for orbit correction
         time2epoch(t_time, t_epoch);
     }
-    if (satnum == 0) return;
 
     // Output epoch record
     B2b_trace(22, "> ORBIT_URAI %04d %02d %02d %02d %02d %.1f %d %d B2bSatPrn_%d @ %04d %02d %02d %02d %02d %.1f\n",
@@ -854,8 +579,9 @@ extern void output_B2bInfo2(raw_t *raw, nav_t *nav) {
 // Output B2b differential code bias information
 extern void output_B2bInfo3(raw_t *raw, nav_t *nav) {
     char satid[16];
-    double t_epoch[6] = {0}, m_epoch[6];
-    int udi = 0, satnum = 0;
+    double t_epoch[6], m_epoch[6];
+    int year, month, day, hour, min, udi, satnum = 0;
+    double sec;
     gtime_t t_time;
 
     // Get current time
@@ -866,11 +592,10 @@ extern void output_B2bInfo3(raw_t *raw, nav_t *nav) {
         const B2bssr_t *b2b = &nav->B2bssr[i];
         if (b2b->update == 0) continue;
         satnum++;
-        udi = (int)b2b->udi[1];  // Update interval for code bias
+        udi = b2b->udi[1];  // Update interval for code bias
         t_time = b2b->t0[1];  // Reference time for code bias
         time2epoch(t_time, t_epoch);
     }
-    if (satnum == 0) return;
 
     // Output epoch record
     B2b_trace(22, "> DIFF_CODE_BIAS %04d %02d %02d %02d %02d %.1f %d %d B2bSatPrn_%d @ %04d %02d %02d %02d %02d %.1f\n",
@@ -912,8 +637,9 @@ extern void output_B2bInfo3(raw_t *raw, nav_t *nav) {
 // Output B2b clock correction information
 extern void output_B2bInfo4(raw_t *raw, nav_t *nav) {
     char satid[16];
-    double t_epoch[6] = {0}, m_epoch[6];
-    int udi = 0, satnum = 0;
+    double t_epoch[6], m_epoch[6];
+    int year, month, day, hour, min, udi, satnum = 0;
+    double sec;
     gtime_t t_time;
 
     // Get current time
@@ -924,11 +650,10 @@ extern void output_B2bInfo4(raw_t *raw, nav_t *nav) {
         const B2bssr_t *b2b = &nav->B2bssr[i];
         if (b2b->update == 0) continue;
         satnum++;
-        udi = (int)b2b->udi[2];  // Update interval for clock correction
+        udi = b2b->udi[2];  // Update interval for clock correction
         t_time = b2b->t0[2];  // Reference time for clock correction
         time2epoch(t_time, t_epoch);
     }
-    if (satnum == 0) return;
 
     // Output epoch record
     B2b_trace(22, "> CLOCK %04d %02d %02d %02d %02d %.1f %d %d B2bSatPrn_%d @ %04d %02d %02d %02d %02d %.1f\n",

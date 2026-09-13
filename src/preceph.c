@@ -368,8 +368,8 @@ extern int readsap(const char *file, gtime_t time, nav_t *nav)
 		nav->pcvs[i]=pcv?*pcv:pcv0;
 		if(pcv)
 		{
-			nav->pcvs[i].var=(double(*)[1600])malloc(sizeof(double)*NSYS_USED*NFREQ*1600);
-			memcpy(nav->pcvs[i].var,pcv->var,sizeof(double)*NSYS_USED*NFREQ*1600);
+			nav->pcvs[i].var=(double(*)[1600])malloc(sizeof(double)*NANTFREQ*1600);
+			memcpy(nav->pcvs[i].var,pcv->var,sizeof(double)*NANTFREQ*1600);
 		}
 	}
 
@@ -868,7 +868,7 @@ extern void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
 	}
 }
 extern void satantoff1(gtime_t time, const double *rs, int sat, const nav_t *nav,
-	double *dantf1, double *dantf2)
+	const uint8_t *code, double *dantf1, double *dantf2)
 {
 	const pcv_t *pcv = nav->pcvs + sat - 1;
 	double ex[3], ey[3], ez[3], es[3], r[3], rsun[3], gmst, erpv[5] = { 0 }, freq[2];
@@ -926,12 +926,15 @@ extern void satantoff1(gtime_t time, const double *rs, int sat, const nav_t *nav
 		j += 3*NFREQ;
 		k += 3*NFREQ;
     }
-    else if (sys==SYS_CMP) { /* B1I-B3I */
-        freq[0]=FREQ1_CMP;
-		freq[1]=FREQ3_CMP;
-
-		j += 2*NFREQ;
-		k += 2*NFREQ;
+    else if (sys==SYS_CMP) { /* observation PCO, not the B2b orbit reference */
+        freq[0]=code?sat2freq(sat,code[0],nav):FREQ1_CMP;
+        freq[1]=code?sat2freq(sat,code[1],nav):FREQ3_CMP;
+        if (code && code2obs(code[0])[0]=='1') {
+            j=bds_ant_index(pcv,code[0],0);
+            k=bds_ant_index(pcv,code[1],0);
+            if (j<0||k<0) return;
+        }
+        else { j+=2*NFREQ; k+=2*NFREQ; }
     }
     else if (sys==SYS_IRN) { /* L5-S */
         freq[0]=FREQL5;
@@ -1050,4 +1053,3 @@ extern int peph2pos_otp(gtime_t time, int sat, const nav_t *nav, int opt,
     
     return 1;
 }
-

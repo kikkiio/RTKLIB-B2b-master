@@ -106,25 +106,26 @@ static double gettgd(int sat, const nav_t *nav, int type)
         return (i>=nav->n)?0.0:nav->eph[i].tgd[type]*CLIGHT;
     }
 }
-/* get BDS group delay for the actual observation code (m) ------------------*/
-static double getbdstgd(int sat, uint8_t code, const nav_t *nav)
+/* get BeiDou group delay for an actual observation code (m) -----------------*/
+static int gettgd_cmp(gtime_t time, int sat, const nav_t *nav, uint8_t code, double *bias)
 {
     const char *obs=code2obs(code);
 
+    if (!obs[0]) return 0;
+    if (obs[0]=='1'||obs[0]=='5') return bds_tgd_bias(time,sat,nav,code,bias);
+
     switch (obs[0]) {
-        case '1': /* B1C: TGD_B1Cp (+ ISC_B1Cd for data/data+pilot) */
-            return gettgd(sat,nav,2)+(obs[1]=='P'?0.0:gettgd(sat,nav,4));
         case '2': /* B1I */
-            return gettgd(sat,nav,0);
-        case '5': /* B2a: TGD_B2ap (+ ISC_B2ad for data/data+pilot) */
-            return gettgd(sat,nav,3)+(obs[1]=='P'?0.0:gettgd(sat,nav,5));
+            *bias=gettgd(sat,nav,0); /* TGD_B1I (B1I/B3I) */
+            return 1;
+        case '6': /* B3I: reference signal for legacy BDS TGD */
+            *bias=0.0;
+            return 1;
         case '7': /* B2I/B2b */
-            return gettgd(sat,nav,1);
-        case '6': /* B3I is the legacy BDS group-delay reference */
-        case '8': /* no separate B2ab TGD is stored in eph_t */
-        default:
-            return 0.0;
+            *bias=gettgd(sat,nav,1); /* TGD_B2I/B2b (B2/B3) */
+            return 1;
     }
+    return 0;
 }
 /* test SNR mask -------------------------------------------------------------*/
 static int snrmask(const obsd_t *obs, const double *azel, const prcopt_t *opt)
@@ -144,7 +145,7 @@ static int snrmask(const obsd_t *obs, const double *azel, const prcopt_t *opt)
 static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
                      double *var)
 {
-    double P1,P2,gamma,b1,b2;
+    double P1,P2,gamma,b1,b2,freq1,freq2;
     int sat,sys,f2,bias_ix;
 
     sat=obs->sat;
@@ -186,13 +187,24 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
             }
             return (P2-gamma*P1)/(1.0-gamma);
         }
-        else if (sys==SYS_CMP) { /* configured BDS dual-frequency pair */
-            double freq1=sat2freq(sat,obs->code[0],nav);
-            double freq2=sat2freq(sat,obs->code[f2],nav);
-            if (freq1==0.0||freq2==0.0||fabs(freq1-freq2)<1E-3) return 0.0;
+        else if (sys==SYS_CMP) { /* BeiDou: use the actual signal pair */
+            freq1=sat2freq(sat,obs->code[0],nav);
+            freq2=sat2freq(sat,obs->code[f2],nav);
+            if (freq1==0.0||freq2==0.0||fabs(freq1-freq2)<1.0) {
+                trace(2,"prange: invalid BDS IFLC frequency sat=%2d code=%d/%d\n",
+                      sat,obs->code[0],obs->code[f2]);
+                return 0.0;
+            }
+            if (!gettgd_cmp(obs->time,sat,nav,obs->code[0],&b1)||
+                !gettgd_cmp(obs->time,sat,nav,obs->code[f2],&b2)) {
+                trace(2,"prange: unsupported BDS IFLC code sat=%2d code=%d/%d\n",
+                      sat,obs->code[0],obs->code[f2]);
+                return 0.0;
+            }
             gamma=SQR(freq1/freq2);
-            b1=getbdstgd(sat,obs->code[0],nav);
-            b2=getbdstgd(sat,obs->code[f2],nav);
+            trace(4,"prange: BDS IFLC sat=%2d code=%d/%d freq=%.3f/%.3f "
+                    "tgd=%.3f/%.3f\n",sat,obs->code[0],obs->code[f2],
+                    freq1,freq2,b1,b2);
             return ((P2-gamma*P1)-(b2-gamma*b1))/(1.0-gamma);
         }
         else if (sys==SYS_IRN) { /* L5-S */
@@ -217,8 +229,12 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
             else                    b1=gettgd(sat,nav,1); /* BGD_E1E5b */
             return P1-b1;
         }
-        else if (sys==SYS_CMP) { /* configured primary BDS frequency */
-            b1=getbdstgd(sat,obs->code[0],nav);
+        else if (sys==SYS_CMP) { /* B1I/B1Cp/B1Cd */
+            if (!gettgd_cmp(obs->time,sat,nav,obs->code[0],&b1)) {
+                trace(2,"prange: unsupported BDS code sat=%2d code=%d\n",
+                      sat,obs->code[0]);
+                return 0.0;
+            }
             return P1-b1;
         }
         else if (sys==SYS_IRN) { /* L5 */
@@ -336,6 +352,15 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
         sat=obs[i].sat;
 
         time2epoch(obs[0].time,debug_epoch);
+
+        if (fabs(debug_epoch[0] - stop_epoch[0]) < 1e-6 &&  // 年
+        fabs(debug_epoch[1] - stop_epoch[1]) < 1e-6 &&  // 月
+        fabs(debug_epoch[2] - stop_epoch[2]) < 1e-6 &&  // 日
+        fabs(debug_epoch[3] - stop_epoch[3]) < 1e-6 &&  // 时
+        fabs(debug_epoch[4] - stop_epoch[4]) < 1e-6 &&  // 分
+        fabs(debug_epoch[5] - stop_epoch[5]) < 1e-3) {  // 秒
+        int a = 0;
+        }
         if (!(sys=satsys(sat,&curprn))) continue;
 
         satno2id(149,id1);
@@ -382,8 +407,8 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
         
         /* pseudorange residual */
         v[nv]=P-(r+dtr-CLIGHT*dts[i*2]+dion+dtrp);
-        trace(4,"sat=%d: v=%.3f P=%.3f obs->p=%.3f r=%.3f dtr=%.6f dts=%.6f dion=%.3f dtrp=%.3f\n",
-            sat,v[nv],P, obs[i].P[0], r, dtr, dts[i * 2], dion, dtrp);
+        trace(4,"rescode sat=%d: v=%.3f P=%.3f r=%.3f dtr=%.6f dts=%.6f dion=%.3f dtrp=%.3f\n",
+            sat,v[nv],P,r,dtr,dts[i*2],dion,dtrp);
         
         /* design matrix */
         for (j=0;j<NX;j++) {
@@ -535,8 +560,6 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
             if ((stat=valsol(azel,vsat,n,opt,v,nv,NX,msg))) {
                 sol->stat=opt->sateph==EPHOPT_SBAS?SOLQ_SBAS:SOLQ_SINGLE;
             }
-            double tow = time2gpst(obs[0].time, NULL);
-            trace(2, "estpos %.2f pos=%2f %2f %2f clk=%.2f\n", tow, x[0], x[1], x[2], x[3]);
             free(v); free(H); free(var);
             return stat;
         }
@@ -544,6 +567,7 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
 	
     if (i>=MAXITR) 
 		sprintf(msg,"iteration divergent i=%d",i);
+    
     free(v); free(H); free(var);
     return 0;
 }
@@ -725,9 +749,17 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
                   char *msg)
 {
     prcopt_t opt_=*opt;
+    obsd_t selected[MAXOBS];
     double *rs,*dts,*var,*azel_,*resp;
     int i,stat,vsat[MAXOBS]={0},svh[MAXOBS];
     
+    if (n<=0||n>MAXOBS||!bds_options_valid(opt,msg)) return 0;
+    if (opt->bds_if) {
+        /* SPP datum is independent of the configured PPP frequency order. */
+        if (opt->if_model) bds_select_spp_obs(obs,selected,n,nav);
+        else bds_select_obs(obs,selected,n,opt->bds_if);
+        obs=selected;
+    }
     trace(2,"pntpos  : tobs=%s n=%d\n",time_str(obs[0].time,3),n);
     
     sol->stat=SOLQ_NONE;

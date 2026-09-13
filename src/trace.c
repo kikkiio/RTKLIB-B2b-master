@@ -9,6 +9,7 @@ static int level_trace = 0;      /* level of trace */
 static uint32_t tick_trace = 0;  /* tick time at traceopen (ms) */
 static gtime_t time_trace = {0}; /* time at traceopen */
 static rtklib_lock_t lock_trace; /* lock for trace */
+static int daily_swap_trace = 0; /* daily file swap flag (0:off,1:on) */
 
 static FILE *fp_B2b_trace = NULL; 
 static int B2b_level_trace = 0;
@@ -21,6 +22,8 @@ static void traceswap(void)
 {
     gtime_t time = utc2gpst(timeget());
     char path[1024];
+
+    if (!daily_swap_trace) return;
 
     rtklib_lock(&lock_trace);
 
@@ -37,7 +40,10 @@ static void traceswap(void)
     }
     if (fp_trace) fclose(fp_trace);
 
-    if (!(fp_trace = fopen(path, "w"))) {
+    /* A replay can move the global time back and forth across midnight as
+     * independent input streams advance. Append when revisiting a dated file
+     * so previously written trace records are never truncated. */
+    if (!(fp_trace = fopen(path, "a"))) {
         fp_trace = stderr;
     }
     rtklib_unlock(&lock_trace);
@@ -61,6 +67,7 @@ extern void traceclose(void)
     file_trace[0] = '\0';
 }
 extern void tracelevel(int level) { level_trace = level; }
+extern void tracesetdailyswap(int enable) { daily_swap_trace = enable != 0; }
 extern void B2b_tracelevel(int level) { B2b_level_trace = level; }
 
 extern int gettracelevel(void) { return level_trace; }
@@ -229,6 +236,8 @@ static void B2btraceswap(void)
     gtime_t time = utc2gpst(timeget());
     char path[1024];
 
+    if (!daily_swap_trace) return;
+
     rtklib_lock(&lock_B2b_trace);
 
     if ((int)(time2gpst(time,       NULL) / INT_SWAP_TRAC) ==
@@ -244,7 +253,7 @@ static void B2btraceswap(void)
     }
     if (fp_B2b_trace) fclose(fp_B2b_trace);
 
-    if (!(fp_B2b_trace = fopen(path, "w"))) {
+    if (!(fp_B2b_trace = fopen(path, "a"))) {
         fp_B2b_trace = stderr;
     }
     rtklib_unlock(&lock_B2b_trace);
@@ -320,8 +329,9 @@ extern void B2b_traceclose(void) {
 extern void B2b_trace_impl(int level, const char *format, ...) {
     va_list ap;
     if (!fp_B2b_trace || level > B2b_level_trace) return;
+    // rtklib_lock(&lock_B2b_trace);
+    // fprintf(fp_B2b_trace, "%d ", level);
     B2btraceswap();
-    rtklib_lock(&lock_B2b_trace);
     va_start(ap, format);
     vfprintf(fp_B2b_trace, format, ap);
     va_end(ap);

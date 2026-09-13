@@ -44,6 +44,7 @@
 *                            use integer types in stdint.h
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
+#include <signal.h>
 #include "B2b.h"
 
 #define MIN_INT_RESET   30000   /* mininum interval of reset command (ms) */
@@ -175,7 +176,13 @@ static void update_eph(rtksvr_t *svr, nav_t *nav, int ephsat, int ephset,
             trace(22, "eph2 (current): iode=%d, toe=%s, ttr=%s\n", eph2->iode, time_str(eph2->toe, 0), time_str(eph2->ttr, 0));
             trace(22, "eph3 (previous): iode=%d, toe=%s, ttr=%s\n", eph3->iode, time_str(eph3->toe, 0), time_str(eph3->ttr, 0));
 
-                if (eph2->ttr.time==0||
+                /* Prefer KXW CNAV1 over recurring rover 1042 messages while
+                   it is current. GPS still comes from the rover (navmsgsel=0). */
+                if (satsys(ephsat,NULL)==SYS_CMP &&
+                    eph2->flag==BDS_NAV_KXW_CNV1 && eph1->flag!=BDS_NAV_KXW_CNV1 &&
+                    fabs(timediff(eph1->ttr,eph2->toe))<=MAXDTOE_CMP) return;
+                if ((eph1->flag==BDS_NAV_KXW_CNV1 && eph2->flag!=BDS_NAV_KXW_CNV1)||
+                    eph2->ttr.time==0||
                     (eph1->iode!=eph3->iode&&eph1->iode!=eph2->iode)||
                     (timediff(eph1->toe,eph3->toe)!=0.0&&
                  timediff(eph1->toe,eph2->toe)!=0.0)||
@@ -341,7 +348,8 @@ static void update_B2bssr(rtksvr_t *svr, int index)
         }
 
         /* Check time validity */
-        if (timediff(raw->time, svr->rtk.sol.time) < -1E-3) {
+        if (raw->format != STRFMT_KXW &&
+            timediff(raw->time, svr->rtk.sol.time) < -1E-3) {
             trace(22,"Early data (B2b_time < sol_time), skip\n");
             raw->nav.B2bssr[i].update = 0;
             continue;
@@ -760,7 +768,7 @@ static void *rtksvrthread(void *arg)
     uint8_t *p,*q;
     char msg[128];
     int i,j,n,cycle,cputime;
-    int fobs[3]={0};
+    int fobs[3]={0},replay_done=0;
 
 	double ep[6], dtt = 0;
 	sol_t  sol1 = { { 0 } };
@@ -820,6 +828,7 @@ static void *rtksvrthread(void *arg)
             for (i=0;i<3;i++) svr->rtk.opt.rb[i]=svr->rb_ave[i];
         }
         for (i=0;i<fobs[0];i++) { /* for each rover observation data */
+            if (replay_done) break;
             obs.n=0;
             for (j=0;j<svr->obs[0][i].n&&obs.n<MAXOBS*2;j++) {
                 obs.data[obs.n++]=svr->obs[0][i].data[j];
@@ -832,6 +841,14 @@ static void *rtksvrthread(void *arg)
 /*            if (!strstr(svr->rtk.opt.pppopt,"-DIS_FCB")) {
                 corr_phase_bias(obs.data,obs.n,&svr->nav);
 			} */
+            /* An exclusive observation-time limit, never a wall-clock approximation. */
+            if (obs.n&&svr->rtk.opt.replay_end.time&&
+                timediff(obs.data[0].time,svr->rtk.opt.replay_end)>=-1E-6) {
+                trace(1,"REPLAY_END reached %s (exclusive)\n",time_str(obs.data[0].time,3));
+                replay_done=1; /* MSVCRT restores SIG_DFL after the first signal */
+                raise(SIGTERM);
+                break;
+            }
             /* rtk positioning */
             rtksvrlock(svr);
             rtkpos(&svr->rtk,obs.data,obs.n,&svr->nav);
@@ -1010,6 +1027,7 @@ extern void rtksvrfree(rtksvr_t *svr)
     int i,j;
     
     free(svr->nav.eph );
+    free(svr->nav.gal_eph);svr->nav.gal_eph=NULL;svr->nav.ngal_eph=0;
     free(svr->nav.geph);
     free(svr->nav.seph);
     for (i=0;i<3;i++) for (j=0;j<MAXOBSBUF;j++) {
@@ -1082,9 +1100,55 @@ extern int rtksvrstart(rtksvr_t *svr, int cycle, int buffsize, int *strs,
     tracet(3,"rtksvrstart: cycle=%d buffsize=%d navsel=%d nmeacycle=%d nmeareq=%d\n",
            cycle,buffsize,navsel,nmeacycle,nmeareq);
     
+    /* Never replace owned navigation records while the worker is using them. */
     if (svr->state) {
-        sprintf(errmsg,"server already started");
-        return 0;
+        strcpy(errmsg,"server already started");return 0;
+    }
+    if (!if_options_normalize(prcopt,errmsg)||!bds_options_valid(prcopt,errmsg)) return 0;
+    if (prcopt->if_model&&(prcopt->navsys&SYS_GAL)) {
+        uint8_t codes[3];int n=if_parse_pairs(SYS_GAL,prcopt->gal_if_pairs,codes)+1;
+        for (i=0;i<n;i++) if (signal_ant_index(prcopt->pcvr,SYS_GAL,codes[i],0)<0) {
+            strcpy(errmsg,"GAL receiver calibration missing (E01/E05/E07 required)");return 0;
+        }
+        if (!gal_load_nav(&svr->nav,prcopt->gal_navfile,errmsg)) return 0;
+        trace(1,"GAL IF: %s; BROADCAST F/NAV, not B2b; common range sigma floor=%.3f m; separate code IFB\n",
+              prcopt->gal_if_pairs,prcopt->gal_brdc_sigma>0?prcopt->gal_brdc_sigma:3.0);
+    }
+    if (prcopt->replay_end.time&&strs[0]!=STR_FILE) {
+        strcpy(errmsg,"replay_end is only supported for rover file streams"); return 0;
+    }
+    if (prcopt->if_model) {
+        uint8_t codes[6]={CODE_L1C,CODE_L2W,CODE_L5Q};
+        bds_parse_freqs(prcopt->bds_freqs,codes+3);
+        trace(1,"IF selection: pairs=%d GPS=L1/L2%s BDS=%s/%s/%s (IF12=0/1,IF13=0/2)\n",
+              prcopt->if_model==1?2:1,prcopt->if_model==1?"/L5":"",
+              code2obs(codes[3]),code2obs(codes[4]),code2obs(codes[5]));
+        trace(1,"IF weights: raw variance, no legacy IF x9; physical L1/B1=0,L2/B3=1,L5/B2a=2\n");
+        if (!prcopt->posopt[1]&&!prcopt->anttype[0][0]&&!prcopt->pcvr[0].type[0])
+            trace(1,"IF receiver antenna: unspecified; PCO/PCV omitted, surveyed ENU delta only\n");
+        for (i=0;i<6;i++) {
+            if (!prcopt->posopt[1]&&!prcopt->anttype[0][0]&&!prcopt->pcvr[0].type[0]) continue;
+            if (!(prcopt->navsys&(i<3?SYS_GPS:SYS_CMP))||
+                (prcopt->if_model==2&&(i==2||i==5))) continue;
+            int idx=signal_ant_index(prcopt->pcvr,i<3?SYS_GPS:SYS_CMP,codes[i],prcopt->bds_ant_fallback);
+            if (idx<0) {strcpy(errmsg,"IF1213 receiver calibration missing (check same-frequency fallback)");return 0;}
+            trace(1,"IF receiver antenna: %c%s slot=%d type=%s\n",i<3?'G':'C',code2obs(codes[i]),idx,prcopt->pcvr[0].type);
+        }
+        if (prcopt->if_model==1) trace(1,"IF1213 GPS=TF-C(link IFCB RW %.6g m/sqrt(s)); BDS=DCB+receiver IFB; full R\n",
+            prcopt->ifcb_prn>0?prcopt->ifcb_prn:0.001);
+        else trace(1,"Single IF: physical antenna corrections and propagated variance; no IF13 states\n");
+    }
+    if (prcopt->bds_if==1&&prcopt->mode>=PMODE_PPP_KINEMA) {
+        const uint8_t codes[2]={CODE_L1P,CODE_L5P};
+        for (i=0;i<2;i++) {
+            int antidx=bds_ant_index(prcopt->pcvr,codes[i],prcopt->bds_ant_fallback);
+            if (antidx<0) {
+                strcpy(errmsg,"B1C/B2a receiver calibration missing; require C01/C05 or explicit E01/E05 fallback");
+                return 0;
+            }
+            if (antidx!=ANT_B1C+i) trace(1,"BDS receiver antenna fallback: %s %s -> %s\n",
+                prcopt->pcvr[0].type,i?"C05":"C01",i?"E05":"E01");
+        }
     }
     strinitcom();
     svr->cycle=cycle>1?cycle:1;
@@ -1121,8 +1185,8 @@ extern int rtksvrstart(rtksvr_t *svr, int cycle, int buffsize, int *strs,
         init_rtcm(svr->rtcm+i);
         
         /* set receiver and rtcm option */
-        strcpy(svr->raw [i].opt,rcvopts[i]);
-        strcpy(svr->rtcm[i].opt,rcvopts[i]);
+        bds_decode_options_ex(svr->raw[i].opt,sizeof(svr->raw[i].opt),rcvopts[i],prcopt);
+        bds_decode_options_ex(svr->rtcm[i].opt,sizeof(svr->rtcm[i].opt),rcvopts[i],prcopt);
         
         /* connect dgps corrections */
         svr->rtcm[i].dgps=svr->nav.dgps;

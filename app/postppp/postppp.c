@@ -149,25 +149,19 @@ static void load_post(const char *filename){
     fclose(file);
 }
 
-static void extract_station_and_doy(const char* filename, char* result)
-{
-    /* 获取去掉路径后的文件名 */
-    const char* base_name = strrchr(filename, '/');
-    const char* backslash = strrchr(filename, '\\');
-
-    if (backslash && (!base_name || backslash > base_name)) {
-        base_name = backslash;
-    }
-    base_name = base_name ? base_name + 1 : filename;
-
-    /* 找到最后一个扩展名分隔符 */
-    const char* dot_pos = strrchr(base_name, '.');
-    if (!dot_pos || strlen(dot_pos + 1) < 2 || strlen(base_name) < 7) {
-        result[0] = '\0';
-        return;
+static void extract_station_and_doy(const char *filename, char *result) {
+    // 获取文件名（去掉路径部分）
+    const char *base_name = strrchr(filename, '/');
+    if (base_name == NULL) {
+        base_name = filename;
+    } else {
+        base_name++;
     }
 
-    /* 提取两位年份 */
+    // 找到最后一个点号的位置
+    const char *dot_pos = strrchr(base_name, '.');
+
+    // 提取年份并转换为四位数
     char two_digit_year[3];
     strncpy(two_digit_year, dot_pos + 1, 2);
     two_digit_year[2] = '\0';
@@ -175,16 +169,20 @@ static void extract_station_and_doy(const char* filename, char* result)
     char four_digit_year[5];
     sprintf(four_digit_year, "20%s", two_digit_year);
 
+    // 提取站点名（前4个字符）
     char station_name[5];
     strncpy(station_name, base_name, 4);
     station_name[4] = '\0';
 
+    // 提取DOY（第5到7个字符）
     char doy[4];
     strncpy(doy, base_name + 4, 3);
     doy[3] = '\0';
 
+    // 组合站点名、年份和DOY
     sprintf(result, "%s%s%s", station_name, four_digit_year, doy);
 }
+
 
 /* rnx2rtkp main -------------------------------------------------------------*/
 int main(int argc, char **argv)

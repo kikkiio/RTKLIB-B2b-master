@@ -18,12 +18,12 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-#include "rtklib.h"
-
 #ifdef _WIN32
+#include <windows.h>
 #define DIR_EXISTS ERROR_ALREADY_EXISTS
 #endif
+
+#include "rtklib.h"
 
 #define FTP_CMD     "wget"          /* FTP/HTTP command */
 #define FTP_TIMEOUT 60              /* FTP/HTTP timeout (s) */

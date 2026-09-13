@@ -586,6 +586,7 @@ static int cmdopts(int argc, char **argv, rnxopt_t *opt, char **ifile,
         else if (!strcmp(fmt,"rt17" )) format=STRFMT_RT17;
         else if (!strcmp(fmt,"sbf"  )) format=STRFMT_SEPT;
         else if (!strcmp(fmt,"unicore")) format=STRFMT_UNICORE;
+        else if (!strcmp(fmt,"kxw")) format=STRFMT_KXW;
         /* else if (!strcmp(fmt,"tersus")) format=STRFMT_TERSUS; */
         else if (!strcmp(fmt,"rinex")) format=STRFMT_RINEX;
     }

@@ -1373,12 +1373,12 @@ extern int init_raw(raw_t *raw, int format)
     raw->num_PPPB2BINF02 = 0;
     raw->num_PPPB2BINF03 = 0;
     raw->num_PPPB2BINF04 = 0;
-    for (i=0;i<16;i++) raw->raw_nmsg[i]=0;
     
     /* initialize receiver dependent data */
     raw->format=format;
     switch (format) {
         case STRFMT_RT17: ret=init_rt17(raw); break;
+        case STRFMT_KXW : ret=init_kxw(raw); break;
     }
     if (!ret) {
         free_raw(raw);
@@ -1405,6 +1405,7 @@ extern void free_raw(raw_t *raw)
     /* free receiver dependent data */
     switch (raw->format) {
         case STRFMT_RT17: free_rt17(raw); break;
+        case STRFMT_KXW : free_kxw(raw); break;
     }
     raw->rcv_data=NULL;
 }
@@ -1436,6 +1437,7 @@ extern int input_raw(raw_t *raw, int format, uint8_t data)
         /*case STRFMT_TERSUS: return input_tersus(raw,data);*/
         case STRFMT_UNICORE : return input_unicore  (raw,data);
         case STRFMT_SINO : return input_sino  (raw,data);
+        case STRFMT_KXW : return input_kxw  (raw,data);
 
     }
     return 0;
@@ -1464,6 +1466,7 @@ extern int input_rawf(raw_t *raw, int format, FILE *fp)
         case STRFMT_SEPT : return input_sbff  (raw,fp);
         case STRFMT_SINO : return input_sinof   (raw,fp);
         case STRFMT_UNICORE  : return input_unicoref  (raw,fp);
+        case STRFMT_KXW : return input_kxwf  (raw,fp);
     }
     return -2;
 }

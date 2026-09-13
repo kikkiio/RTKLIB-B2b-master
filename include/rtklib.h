@@ -39,7 +39,6 @@
 #include <ctype.h>
 #include <stdint.h>
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
 #pragma comment(lib, "WS2_32.lib")
@@ -436,6 +435,7 @@ extern "C" {
 #define EPHOPT_SBAS 2                   /* ephemeris option: broadcast + SBAS */
 #define EPHOPT_SSRAPC 3                 /* ephemeris option: broadcast + SSR_APC */
 #define EPHOPT_SSRCOM 4                 /* ephemeris option: broadcast + SSR_COM */
+#define BDS_NAV_KXW_CNV1 3             /* eph.flag: KSRTCM CNAV1 orbit/clock */
 #define EPHOPT_B2b    5                 /* ephemeris option: broadcast + B2b_SSR_APC */
 
 #define ARMODE_OFF  0                   /* AR mode: off */
@@ -498,6 +498,7 @@ extern "C" {
 #define STRFMT_NMEA    19                 /* stream format: NMEA 0183 */
 #define STRFMT_SINO  20                 /* stream format: SINAN K803LITE/W/S */
 #define STRFMT_UNICORE  21                 /* stream format: Unicore UM980/UM982 */
+#define STRFMT_KXW     22                 /* stream format: KXW KSRTCM messages */
 #define MAXRCVFMT      14                 /* max number of receiver format */
 
 #define STR_MODE_R  0x1                 /* stream mode: read */
@@ -550,6 +551,10 @@ extern "C" {
 #define P2_50       8.881784197001252E-16 /* 2^-50 */
 #define P2_55       2.775557561562891E-17 /* 2^-55 */
 #define NSYS_USED   5                     /* number of satellite systems */
+#define NANTFREQ    (NSYS_USED*NFREQ+3)    /* legacy slots plus C01/C05/G05 */
+#define ANT_B1C     (NSYS_USED*NFREQ)
+#define ANT_B2A     (NSYS_USED*NFREQ+1)
+#define ANT_GPS_L5  (NSYS_USED*NFREQ+2)
 
 #ifdef WIN32
 #define rtklib_thread_t    HANDLE
@@ -582,21 +587,12 @@ extern "C" {
 
 #define B2B_CodeBiasModeNum 15
 
-/* PPP-B2b correction update/validity bits */
-#define B2B_UPD_ORBIT  0x01u
-#define B2B_UPD_CLOCK  0x02u
-#define B2B_UPD_CBIAS  0x04u
-#define B2B_UPD_URA    0x08u
-
 #ifndef PACKED_
 #ifdef _MSC_VER
-    #define PACKED_
-    #define PACKED_BEGIN __pragma(pack(push, 1))
-    #define PACKED_END __pragma(pack(pop))
+#pragma pack(push,1)
+#define PACKED_
 #else
-    #define PACKED_ __attribute__((__packed__))
-    #define PACKED_BEGIN
-    #define PACKED_END
+#define PACKED_ __attribute__((__packed__))
 #endif
 #endif
 
@@ -653,7 +649,8 @@ typedef struct
 	char type[MAXANT];  /* antenna type */
 	char code[MAXANT];  /* serial number or satellite code */
 	gtime_t ts,te;      /* valid time start and end */
-	double off[NSYS_USED*NFREQ][ 3]; /* phase center offset e/n/u or x/y/z (m) */
+	double off[NANTFREQ][3]; /* physical ANTEX frequency, independent of obs slots */
+    uint8_t valid[NANTFREQ]; /* PCO/PCV calibration present (zero is valid) */
 //	double var_GPS[NFREQ][1600];  /* phase center variation (m) */
 								  /* el=90,85,...,0 or nadir=0,1,2,3,... (deg) */
 //	double var_GLO[NFREQ][1600];
@@ -707,9 +704,10 @@ typedef struct {        /* GPS/QZS/GAL broadcast ephemeris type */
     double tgd[6];      /* group delay parameters */
                         /* GPS/QZS:tgd[0]=TGD */
                         /* GAL:tgd[0]=BGD_E1E5a,tgd[1]=BGD_E1E5b */
-                        /* CMP:tgd[0]=TGD_B1I ,tgd[1]=TGD_B2I/B2b,tgd[2]=TGD_B1Cp */
+                        /* CMP:tgd[0]=TGD_B1I/B3I,tgd[1]=TGD_B2I/B3I,tgd[2]=TGD_B1Cp */
                         /*     tgd[3]=TGD_B2ap,tgd[4]=ISC_B1Cd   ,tgd[5]=ISC_B2ad */
     double Adot,ndot;   /* Adot,ndot for CNAV */
+    uint8_t tgd_valid;  /* BDS modern TGD/ISC presence bitmask; not inferred from value */
 } eph_t;
 
 typedef struct {        /* GLONASS broadcast ephemeris type */
@@ -941,7 +939,6 @@ typedef struct {
     int IODP;              // Issue of Data for Positioning
     int satnum;            // Number of satellites
     int satno[B2B_MAXSAT]; // Satellite numbers
-    gtime_t last_time[4];  // Last accepted epoch for message types 1-4
     // int sow;            // Second of week (commented out)
 } B2bmask_t;
 
@@ -970,7 +967,8 @@ typedef struct {
     float  cbias[MAXCODE]; /* code biases (m) */
     double dclk [3];    /* delta clock {c0,c1,c2} (m,m/s,m/s^2) */
 
-    uint8_t update;     /* B2B_UPD_* bit mask */
+    uint8_t cbias_valid[MAXCODE]; /* explicit signal presence, including zero DCB */
+    int update;     /* update flag (0:no update,1:update) */
 } B2bssr_t;
 
 typedef struct {        /* RTCM control struct type */
@@ -1023,8 +1021,7 @@ resulting in a total size of 8 bytes for `MyStruct` instead of 5 bytes (1-byte c
 The `PACKED_` attribute disables the default byte alignment rules, forcing the struct members to be stored compactly in the defined order 
 without padding bytes.
 */
-
-typedef struct PACKED {
+typedef struct PACKED_ {
     uint16_t usPrn;     // PRN (161-based)
     uint16_t usIodn;    // Basic navigation message version number
     int16_t sRadial;    // Radial correction
@@ -1034,30 +1031,23 @@ typedef struct PACKED {
     uint8_t ucURAI;     // User Range Accuracy Index (URAI) for this satellite
 } PACKED_StOrbitCorr;
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint16_t usMode;    // Signal branch and processing mode for code bias
     int16_t sCodeCorr;  // Code bias value
 } PACKED_StCodeCorr_t;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint16_t usIodCorr; // Correction version number
     int16_t sC0;        // Clock correction
 } PACKED_StClkCorr_t;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint16_t usSatSlot; // Satellite slot mask position
     uint16_t usBiasNum; // Number of code biases
     PACKED_StCodeCorr_t stCodeCorr[15]; // Code bias entries
 } PACKED_StCodeBias_t;
-PACKED_END
 
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     int16_t Prn;        // PRN (161-based)
     uint8_t Iodssr;     // State space representation (SSR) data version number
@@ -1066,9 +1056,7 @@ typedef struct PACKED_ {
     unsigned char Mask[32]; // PRN bit mask
     uint32_t Xxxx;      // CRC
 } PACKED_PPPB2BINF01;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     int16_t Prn;        // PRN (161-based)
     uint8_t Iodssr;     // SSR data version number
@@ -1077,9 +1065,7 @@ typedef struct PACKED_ {
     PACKED_StOrbitCorr StOrbitCorr[6];  // Orbit corrections
     uint32_t Xxxx;      // CRC
 } PACKED_PPPB2BINF02;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     int16_t Prn;        // PRN (161-based)
     uint8_t Iodssr;     // SSR data version number
@@ -1088,9 +1074,7 @@ typedef struct PACKED_ {
     PACKED_StCodeBias_t* StCodeBias_t; // Pointer to code bias entries
     uint32_t Xxxx;      // CRC
 } PACKED_PPPB2BINF03;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     int16_t Prn;        // PRN (161-based)
     uint8_t Iodssr;     // SSR data version number
@@ -1101,9 +1085,7 @@ typedef struct PACKED_ {
     PACKED_StClkCorr_t ClkCorr[23]; // Clock corrections
     uint32_t Xxxx;      // CRC
 } PACKED_PPPB2BINF04;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint8_t Prn;    // PRN (161 based)
     uint8_t health;
@@ -1152,9 +1134,7 @@ typedef struct PACKED_ {
     uint32_t FreqType;
     uint32_t Xxxx;  // CRC
 }PACKED_UNICORE_BD3EPH;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint32_t Prn;    // PRN (161 based)
     double Tow;
@@ -1190,9 +1170,7 @@ typedef struct PACKED_ {
     double URA;
     uint32_t Xxxx;  // CRC
 }PACKED_UNICORE_GPSEPH;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint16_t wSize;
     uint8_t blFlag;
@@ -1234,9 +1212,7 @@ typedef struct PACKED_ {
     uint32_t Xxxx;  // CRC
 
 }PACKED_SINO_GPSEPHEM;
-PACKED_END
 
-PACKED_BEGIN
 typedef struct PACKED_ {
     uint8_t Prn;
     uint8_t Valid;
@@ -1281,7 +1257,10 @@ typedef struct PACKED_ {
     double tgdB1Cd;
     uint32_t Xxxx;  // CRC
 }PACKED_SINO_BD3EPHEM;
-PACKED_END
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 
 typedef struct {        /* navigation data type */
@@ -1293,6 +1272,8 @@ typedef struct {        /* navigation data type */
     int na,namax;       /* number of almanac data */
     int nt,ntmax;       /* number of tec grid data */
     eph_t *eph;         /* GPS/QZS/GAL/BDS/IRN ephemeris */
+    eph_t *gal_eph;     /* owned optional external GAL broadcast records */
+    int ngal_eph;
     geph_t *geph;       /* GLONASS ephemeris */
     seph_t *seph;       /* SBAS ephemeris */
     peph_t *peph;       /* precise ephemeris */
@@ -1529,7 +1510,51 @@ typedef struct {        /* processing options type */
     int B2b_format;
     char sationname[MAXANT]; /* rover station name：only for post_mode */
     int  sampling;      /* SP3 file sampling */
+    int bds_if;         /* 0:B1I/B3I, 1:B1C/B2a, 2:B2a/B1C/B1I */
+    int bds_ant_fallback; /* 0:require C01/C05, 1:allow receiver E01/E05 */
+    int if_model;      /* compatibility: 0:legacy, 1:two IF pairs, 2:one configured IF pair */
+    double ifcb_prn;   /* GPS link IFCB random walk (m/sqrt(s)), 0:0.001 */
+    gtime_t replay_end; /* exclusive GPST end for file replay, 0:unlimited */
+    char bds_freqs[64]; /* compatibility: ordered 2/3 bands; empty = B2a,B1C,B1I */
+    char gps_if_pairs[64]; /* L1/L2 or L1/L2,L1/L5; derives nf/if_model */
+    char bds_if_pairs[64]; /* one pair or two pairs sharing their first band */
+    char gal_if_pairs[64]; /* E1/E5a or E1/E5a,E1/E5b, F/NAV reference */
+    int gal_ephemeris;     /* 0:disabled, 1:explicit broadcast-only GAL */
+    double gal_brdc_sigma; /* common satellite range sigma floor (m), 0:3 */
+    char gal_navfile[MAXSTRPATH]; /* external GAL RINEX navigation */
 } prcopt_t;
+
+extern int gal_load_nav(nav_t *nav, const char *file, char *msg);
+extern const eph_t *gal_select_eph(const nav_t *nav, int sat, gtime_t time, int fnav);
+extern int gal_code_bias(const nav_t *nav, int sat, gtime_t time, uint8_t code, double *bias);
+extern void satposs_if(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
+                      const prcopt_t *opt, double *rs, double *dts, double *var, int *svh);
+extern int if_options_normalize(prcopt_t *opt, char *msg);
+extern int if_parse_pairs(int sys, const char *text, uint8_t codes[3]);
+extern int bds_options_valid(const prcopt_t *opt, char *msg);
+extern void bds_decode_options(char *dst, size_t size, const char *src, int pair);
+extern int code2obsidx(int sys, uint8_t code, const char *opt);
+extern void bds_select_obs(const obsd_t *src, obsd_t *dst, int n, int pair);
+extern int bds_ant_index(const pcv_t *pcv, uint8_t code, int fallback);
+extern int bds_code_bias(gtime_t time, const B2bssr_t *ssr, uint8_t code, double *bias);
+extern int bds_tgd_bias(gtime_t time, int sat, const nav_t *nav, uint8_t code, double *bias);
+extern int bds_parse_freqs(const char *text, uint8_t codes[3]);
+extern void bds_decode_options_ex(char *dst, size_t size, const char *src, const prcopt_t *opt);
+extern void bds_select_obs_ex(const obsd_t *src, obsd_t *dst, int n, const prcopt_t *opt);
+extern void bds_select_spp_obs(const obsd_t *src, obsd_t *dst, int n, const nav_t *nav);
+extern int signal_noise_index(int sys, uint8_t code);
+/* IF1213 helpers: phase and code are in metres, frequency indices stay physical. */
+extern int if_coefficients(double f1, double f2, double *a, double *b);
+extern double if_covariance(const double *a, const double *b, const double *rawvar);
+extern int signal_ant_index(const pcv_t *pcv, int sys, uint8_t code, int fallback);
+extern int signal_antmodel(const pcv_t *pcv, int sys, uint8_t code,
+                          const double *del, const double *azel, double nadir,
+                          int pcvopt, int fallback, double *dant);
+extern int signal_satantoff(gtime_t time, const double *rs, int sat,
+                           const nav_t *nav, uint8_t code, double *dant);
+extern int antmodel_bds(const pcv_t *pcv, const uint8_t *code, const double *del,
+                       const double *azel, int pcvopt, int fallback, double *dant);
+extern int antmodel_s_bds(const pcv_t *pcv, const uint8_t *code, double nadir, double *dant);
 
 typedef struct {        /* solution options type */
     int posf;           /* solution format (SOLF_???) */
@@ -1566,6 +1591,7 @@ typedef struct {        /* file options type */
     char geexe  [MAXSTRPATH]; /* google earth exec file */
     char solstat[MAXSTRPATH]; /* solution statistics file */
     char trace  [MAXSTRPATH]; /* debug trace file */
+    int trace_daily;          /* trace file daily swap (0:off,1:on) */
 } filopt_t;
 
 typedef struct {        /* RINEX options type */
@@ -1634,6 +1660,8 @@ typedef struct {        /* satellite status type */
     double phw;         /* phase windup (cycle) */
     gtime_t pt[2][NFREQ]; /* previous carrier-phase time */
     double  ph[2][NFREQ]; /* previous carrier-phase observable (cycle) */
+    uint8_t obs_code[NFREQ]; /* previous selected signal, for ambiguity reset */
+    uint8_t if_slip[2]; /* pair-local GF/MW slips (raw LLI remains in slip[]) */
 } ssat_t;
 
 typedef struct {        /* ambiguity control type */
@@ -1881,7 +1909,6 @@ EXPORT char *code2obs(uint8_t code);
 EXPORT double code2freq(int sys, uint8_t code, int fcn);
 EXPORT double sat2freq(int sat, uint8_t code, const nav_t *nav);
 EXPORT int  code2idx(int sys, uint8_t code);
-EXPORT int  setbdsfreqs(const char *freqs);
 EXPORT int  satexclude(int sat, double var, int svh, const prcopt_t *opt);
 EXPORT int  testsnr(int base, int freq, double el, double snr,
                     const snrmask_t *mask);
@@ -2010,6 +2037,7 @@ EXPORT void B2b_traceclose(void);
 EXPORT void traceopen(const char *file);
 EXPORT void traceclose(void);
 EXPORT void tracelevel(int level);
+EXPORT void tracesetdailyswap(int enable);
 EXPORT int gettracelevel(void);
 EXPORT void B2b_tracelevel(int level);
 EXPORT int B2b_gettracelevel(void);
@@ -2035,6 +2063,7 @@ EXPORT void traceB2b_impl(int level, const nav_t *nav);
 #define traceopen(file)       ((void)0)
 #define traceclose()          ((void)0)
 #define tracelevel(level)     ((void)0)
+#define tracesetdailyswap(enable) ((void)0)
 #define gettracelevel() 0
 
 #define trace(level, ...)     ((void)0)
@@ -2151,7 +2180,7 @@ extern int peph2pos_otp(gtime_t time, int sat, const nav_t *nav, int opt,
 EXPORT void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
 					  double *dant);
 EXPORT void satantoff1(gtime_t time, const double *rs, int sat, const nav_t *nav,
-					  double *dantf1, double *dantf2);
+                      const uint8_t *code, double *dantf1, double *dantf2);
 extern void satantoff2(gtime_t time, const double *rs, int sat, const nav_t *nav,
                       double *dant, int B2bAPC_FLAG);
 EXPORT int  satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
@@ -2243,8 +2272,12 @@ EXPORT int input_unicore(raw_t *raw, uint8_t data);
 
 EXPORT int input_sinof(raw_t *raw, FILE *fp);
 EXPORT int input_sino(raw_t *raw, uint8_t data);
-EXPORT int input_SSR(raw_t *raw, uint8_t data);
-EXPORT int decode_PPPB2b(raw_t *raw);
+
+EXPORT int init_kxw(raw_t *raw);
+EXPORT void free_kxw(raw_t *raw);
+EXPORT int input_kxwf(raw_t *raw, FILE *fp);
+EXPORT int input_kxw(raw_t *raw, uint8_t data);
+EXPORT int decode_PPPB2b(raw_t *raw, int *bitpos, int geoprn, int mes_type);
 
 
 
@@ -2460,8 +2493,4 @@ extern void settime(gtime_t time);
 #ifdef __cplusplus
 }
 #endif
-
-/* Include enum.h after C++ guard */
-#include "enum.h"
-
 #endif /* RTKLIB_H */

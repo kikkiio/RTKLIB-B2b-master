@@ -118,6 +118,7 @@
 *                           suppress warnings
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
+#include"enum.h"
 
 
 /* constants/macros ----------------------------------------------------------*/
@@ -985,7 +986,7 @@ static void set_index(double ver, int sys, const char *opt,
     for (i=n=0;*tobs[i];i++,n++) {
         ind->code[i]=obs2code(tobs[i]+1);
         ind->type[i]=(p=strchr(obscodes,tobs[i][0]))?(int)(p-obscodes):0;
-        ind->idx[i]=code2idx(sys,ind->code[i]);
+        ind->idx[i]=code2obsidx(sys,ind->code[i],opt);
         ind->pri[i]=getcodepri(sys,ind->code[i],opt);
         ind->pos[i]=-1;
     }
@@ -1426,6 +1427,7 @@ static int decode_eph(double ver, int sat, gtime_t toc, const double *data,
         /* According to "IGMAS_CNAV_RINEX3.0": CNAV1 carries TGD_B1Cp + ISC_B1Cd */
         eph->tgd[2]=   data[29];      /* TGD1 B1Cp */
         eph->tgd[4]=   data[27];      /* ISC_B1Cd */
+        eph->tgd_valid=(1<<2)|(1<<4);
     }
     else if (sys==SYS_IRN) { /* IRNSS v.3.03 */
         eph->iode=(int)data[ 3];      /* IODEC */

@@ -271,7 +271,7 @@ static void update_B2b_ssr(gtime_t time, int format)
     char satid[8];
     int i;
 
-    if (format != STRFMT_SINO && format != STRFMT_UNICORE) {
+    if (format != STRFMT_SINO && format != STRFMT_UNICORE && format != STRFMT_KXW) {
         printf("Error Format: %d \n", format);
     }
 
@@ -934,6 +934,7 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, const char **infile,
                       obs_t *obs, nav_t *nav, sta_t *sta)
 {
     int i,j,ind=0,nobs=0,rcv=1;
+    char obsopt[300];
 
     trace(3,"readobsnav: ts=%s n=%d\n",time_str(ts,0),n);
 
@@ -952,7 +953,8 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, const char **infile,
             ind=index[i]; nobs=obs->n;
         }
         /* read rinex obs and nav file */
-        if (readrnxt(infile[i],rcv,ts,te,ti,prcopt->rnxopt[rcv<=1?0:1],obs,nav,
+        bds_decode_options_ex(obsopt,sizeof(obsopt),prcopt->rnxopt[rcv<=1?0:1],prcopt);
+        if (readrnxt(infile[i],rcv,ts,te,ti,obsopt,obs,nav,
                      rcv<=2?sta+rcv-1:NULL)<0) {
             checkbrk("error : insufficient memory");
             trace(1,"insufficient memory\n");
@@ -1151,6 +1153,7 @@ static void closeses(nav_t *nav, pcvs_t *pcvs, pcvs_t *pcvr)
 
     /* free erp data */
     free(nav->erp.data); nav->erp.data=NULL; nav->erp.n=nav->erp.nmax=0;
+    free(nav->gal_eph);nav->gal_eph=NULL;nav->ngal_eph=0;
 
     /* close solution statistics and debug trace */
     rtkclosestat();
@@ -1617,8 +1620,17 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
 
     trace(3,"postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n",ti,tu,n,outfile);
 
+    prcopt_t normalized=*popt;char ifmsg[128];
+    if (!if_options_normalize(&normalized,ifmsg)||!bds_options_valid(&normalized,ifmsg)) {
+        showmsg("error : %s",ifmsg);return -1;
+    }
+    popt=&normalized;
+
     /* open processing session */
     if (!openses(popt,sopt,fopt,&navs,&pcvss,&pcvsr)) return -1;
+    if (popt->if_model&&(popt->navsys&SYS_GAL)&&!gal_load_nav(&navs,popt->gal_navfile,ifmsg)) {
+        showmsg("error : %s",ifmsg);closeses(&navs,&pcvss,&pcvsr);return -1;
+    }
 
     if (ts.time!=0&&te.time!=0&&tu>=0.0) {
         if (timediff(te,ts)<0.0) {

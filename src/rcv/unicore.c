@@ -276,6 +276,7 @@ static int decode_PPPPB2BINFO3(raw_t* raw)
         raw->nav.B2bssr[satno].verify_sow = verify_sow;
 
         int signum = data3.StCodeBias_t[i].usBiasNum;
+        memset(raw->nav.B2bssr[satno].cbias_valid,0,sizeof(raw->nav.B2bssr[satno].cbias_valid));
 
         for (int j = 0; j < signum; ++j) {
             mode = data3.StCodeBias_t[i].stCodeCorr[j].usMode;
@@ -288,6 +289,7 @@ static int decode_PPPPB2BINFO3(raw_t* raw)
             type = cods[mode];
             if (type == CODE_NONE) continue;
             raw->nav.B2bssr[satno].cbias[type] = data3.StCodeBias_t[i].stCodeCorr[j].sCodeCorr * 0.017;
+            raw->nav.B2bssr[satno].cbias_valid[type] = 1;
             raw->nav.B2bssr[satno].update = 1;
         }
     }
@@ -566,6 +568,7 @@ static int decode_BDSEPH(raw_t* raw) {
     eph.OMGd = data_BDSEPH.omega_dot;
     eph.tgd[2]  = data_BDSEPH.Tgdb1cp;
     eph.tgd[4]  = data_BDSEPH.ISCb1cd;
+    eph.tgd_valid = (1<<2)|(1<<4);
     eph.f0   = data_BDSEPH.af0;
     eph.f1   = data_BDSEPH.af1;
     eph.f2   = data_BDSEPH.af2;
@@ -718,4 +721,3 @@ extern int input_unicoref(raw_t *raw, FILE *fp)
     }
     return 0;
 }
-

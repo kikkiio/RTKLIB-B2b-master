@@ -1,11 +1,13 @@
 set(B2bLIB_SOURCES
+    bds_signal.c
+    if1213.c
+    gal_if.c
     convgpx.c
     convbin.c
     convkml.c
     convrnx.c
     datum.c
     download.c
-    enum.c
     ephemeris.c
     geoid.c
     gis.c
@@ -36,6 +38,7 @@ set(B2bLIB_SOURCES
     trace.c
     vt.c
     B2b.c
+    # reciver decoder
     rcv/binex.c
     rcv/crescent.c
     rcv/javad.c
@@ -49,6 +52,8 @@ set(B2bLIB_SOURCES
     rcv/ublox.c
     rcv/unicore.c
     rcv/sinan.c
+    rcv/kxw.c
+    # fortran to c
     f2c/cal2jd.c
     f2c/dat.c
     f2c/dehanttideinel.c
@@ -66,28 +71,41 @@ set(B2bLIB_SOURCES
     f2c/zero_vec8.c
 )
 
+
+# 生成一个静态库供子项目使用
 add_library(B2bLib STATIC ${B2bLIB_SOURCES})
 
-target_include_directories(B2bLib PUBLIC "${PROJECT_SOURCE_DIR}/include")
+if(MSVC)
+    target_compile_options(B2bLib PUBLIC /utf-8)
+    target_compile_definitions(B2bLib PUBLIC WIN32_LEAN_AND_MEAN)
+endif()
 
+# 链接数学库、线程库 (BLAS 和 LAPACK 未在嵌入式环境下验证是否可以安装，因此跳过使用)
+if(UNIX)
+    target_link_libraries(B2bLib PUBLIC m)
+endif()
+
+# 根据操作系统链接线程库
+if(UNIX)
+    # Linux 或其他 POSIX 系统使用 pthread
+    target_link_libraries(B2bLib PUBLIC pthread)
+elseif(MINGW)
+    # Windows 下 MinGW 使用 -mthreads
+    target_compile_options(B2bLib PUBLIC -mthreads)
+    target_link_libraries(B2bLib PUBLIC ws2_32 winmm)
+    message(STATUS "MinGW library path: ${CMAKE_C_IMPLICIT_LINK_DIRECTORIES}")
+elseif(WIN32)
+    target_link_libraries(B2bLib PUBLIC ws2_32 winmm)
+endif()
+
+# 指定头文件路径
+target_include_directories(B2bLib PUBLIC ${PROJECT_SOURCE_DIR}/include)
+
+# 处理定义
 target_compile_definitions(B2bLib PUBLIC
     ENAGLO
     ENAGAL
     ENACMP
     ENAQZS
+    # LAPACK
 )
-
-if(UNIX)
-    target_link_libraries(B2bLib PUBLIC m pthread)
-elseif(WIN32)
-    if(MSVC)
-        target_compile_options(B2bLib PUBLIC /FS)
-        target_compile_definitions(B2bLib PRIVATE
-            _CRT_SECURE_NO_WARNINGS
-            WIN32_LEAN_AND_MEAN
-        )
-    else()
-        target_compile_options(B2bLib PUBLIC -mthreads)
-    endif()
-    target_link_libraries(B2bLib PUBLIC ws2_32 winmm)
-endif()

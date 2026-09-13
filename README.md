@@ -103,3 +103,11 @@ We would like to thank **Xin Xu** from China University of Mining and Technology
 Copyright (C) 2024-2026 Chunbo Liu / APM, CAS
 
 This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). You are free to use, modify, and distribute this software under the terms of GPLv3. See the [LICENSE](LICENSE) file for details.
+
+## KXW IF1213 三阶段迭代
+
+当前快照：**第 1 版，原方案：KXW IF1213，旧天线配置，原有残差剔除**。
+
+详细构建和数据调用见 [KXW_QUICKSTART.md](manual/KXW_QUICKSTART.md)。三个版本使用分支 codex/kxw-v1-original、codex/kxw-v2-new-model、codex/kxw-v3-robust 固定保存；main 最终指向第三版。
+
+输入数据、天线产品、可执行程序和本机解算日志不随源码上传。请将对应 ANTEX 放入 example/rtppp/conf；第一版使用 igs20_2350.atx，第二/三版使用 igs20.atx。接收机型号未知可继续运行。
