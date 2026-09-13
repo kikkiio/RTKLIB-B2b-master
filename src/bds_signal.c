@@ -82,6 +82,10 @@ extern int if_options_normalize(prcopt_t *opt, char *msg)
     const char *names[4]={"B1I","B3I","B1C","B2a"};
     const uint8_t values[4]={CODE_L2I,CODE_L6I,CODE_L1P,CODE_L5P};
     int i,j;
+    if (opt->robust<0||opt->robust>1||!isfinite(opt->robust_k)||
+        (opt->robust_k!=0.0&&(opt->robust_k<1.0||opt->robust_k>10.0))) {
+        strcpy(msg,"PPP robust must be 0/1; robust_k must be 0(default) or 1..10 sigma");return 0;
+    }
     if (!opt->gps_if_pairs[0]&&!opt->bds_if_pairs[0]&&!opt->gal_if_pairs[0]) return 1;
     if (opt->if_model<0) {strcpy(msg,"invalid configuration (including replay_end)");return 0;}
     if (opt->navsys&~(SYS_GPS|SYS_CMP|SYS_GAL)) {

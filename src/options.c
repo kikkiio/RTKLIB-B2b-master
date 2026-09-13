@@ -134,6 +134,8 @@ EXPORT opt_t sysopts[]={
     {"pos2-dopthres",   1,  (void *)&prcopt_.thresdop,   "m"    },
     {"pos2-rejionno",   1,  (void *)&prcopt_.maxinno[0], "m"    },
     {"pos2-rejcode",    1,  (void *)&prcopt_.maxinno[1], "m"    },
+    {"pos2-ppprobust",  0,  (void *)&prcopt_.robust, "0:legacy,1:Huber"},
+    {"pos2-ppprobustk", 1,  (void *)&prcopt_.robust_k, "sigma (0:2.5)"},
     {"pos2-niter",      0,  (void *)&prcopt_.niter,      ""     },
     {"pos2-baselen",    1,  (void *)&prcopt_.baseline[0],"m"    },
     {"pos2-basesig",    1,  (void *)&prcopt_.baseline[1],"m"    },
@@ -824,6 +826,8 @@ extern void load_config(const char *filename, prcopt_t *popt, solopt_t *sopt, fi
             else if (strcmp(key, "prcopt.dopthres") == 0)  _prcopt.thresdop = atof(value);
             else if (strcmp(key, "prcopt.rejionno") == 0)  _prcopt.maxinno[0] = atof(value);
             else if (strcmp(key, "prcopt.rejcode") == 0)   _prcopt.maxinno[1] = atof(value);
+            else if (strcmp(key, "prcopt.robust") == 0)    _prcopt.robust = atoi(value);
+            else if (strcmp(key, "prcopt.robust_k") == 0)  _prcopt.robust_k = atof(value);
             /*------------------------------------------------------------------------------------------*/
         }
     }

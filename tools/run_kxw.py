@@ -19,7 +19,7 @@ def main():
     ap.add_argument('--template',type=Path,default=ROOT/'example/rtppp/conf/kxw_if1213.conf')
     ap.add_argument('--antenna',type=Path,default=ROOT/'example/rtppp/conf/igs20.atx')
     ap.add_argument('--elevation',type=float,default=7)
-    ap.add_argument('--robust',type=int,choices=[0],default=0)
+    ap.add_argument('--robust',type=int,choices=[0,1],default=1)
     ap.add_argument('--speed',type=float,default=20)
     ap.add_argument('--trace',type=int,default=2)
     ap.add_argument('--mode',choices=['static','kinematic'],default='static')
@@ -38,7 +38,7 @@ def main():
     (out/'out').mkdir(parents=True)
     text=a.template.resolve().read_text(encoding='utf8')
     settings={'prcopt.mode':8 if a.mode=='static' else 7,'prcopt.elmin':a.elevation,
-        'filopt.satantp':antenna.as_posix(),
+        'prcopt.robust':a.robust,'prcopt.robust_k':2.5,'filopt.satantp':antenna.as_posix(),
         'strpath[0]':(data/'ROVER').as_posix()+f'::T::x{a.speed:g}',
         'strpath[2]':(data/'PPP').as_posix()+f'::T::x{a.speed:g}',
         'strpath[3]':(out/'out/solution.pos').as_posix(),'filopt.trace':(out/'run.trace').as_posix(),

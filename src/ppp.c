@@ -765,7 +765,8 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         out->raw_P[i]=obs->P[i]+delta;
         if (rs) {
             rot[0]=off[i][0]+off[i][1]*OMGE*elapsed;
-            rot[1]=off[i][1]-off[i][0]*OMGE*elapsed;rot[2]=off[i][2];
+            rot[1]=off[i][1]-off[i][0]*OMGE*elapsed;
+            rot[2]=off[i][2];
             out->raw_L[i]-=dr+ds+dot(rot,e,3);
             out->raw_P[i]-=dr+ds+dot(rot,e,3);
         }
@@ -1388,7 +1389,6 @@ static int model_iono(gtime_t time, const double *pos, const double *azel,
     }
     return 0;
 }
-/* phase and code residuals --------------------------------------------------*/
 /* PRNs are identifiers, not permanent BDS generations. The ANTEX record has
  * already been selected for the observation epoch. Modern B1C/B2a tracking
  * supplies a fallback if there is no descriptive satellite antenna record. */
@@ -1409,11 +1409,46 @@ static int ppp_bds3(const obsd_t *obs, const nav_t *nav)
     return prn>16; /* compatibility for legacy observations without metadata */
 }
 
-static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
+/* Per-epoch, per-equation variance factors. Keys survive row removal/reordering.
+ * Huber uses postfit residual / original observation sigma, not raw metres.
+ * R' = D R D with D_ii=sqrt(factor_i), retaining shared-frequency correlation.
+ * Every retry starts from the SAME predicted state/covariance in pppos().
+ * This is an observation-normalized Huber scheme, not a leverage-corrected
+ * residual chi-square test. Existing gross prefit and 4-sigma gates remain. */
+typedef struct {
+    double factor[MAXOBS*2*NFREQ];
+    int key[MAXOBS*2*NFREQ];
+    int freeze;
+} ppp_qc_t;
+
+static double ppp_huber_factor(double residual, double variance, double k)
+{
+    double z;
+    if (!(variance>0.0)||!isfinite(residual)||!isfinite(variance)) return 100.0;
+    if (!(k>0.0)) k=2.5;
+    z=fabs(residual)/sqrt(variance);
+    return MAX(1.0,MIN(100.0,z/k)); /* precision weight in [0.01,1] */
+}
+static void ppp_qc_init(ppp_qc_t *qc)
+{
+    int i;
+    memset(qc,0,sizeof(*qc));
+    for (i=0;i<MAXOBS*2*NFREQ;i++) qc->factor[i]=1.0;
+}
+static void ppp_qc_covariance(double *R, int n, const int *key,
+                              const double *factor)
+{
+    int i,j;
+    for (j=0;j<n;j++) for (i=0;i<n;i++)
+        R[i+j*n]*=sqrt(factor[key[i]]*factor[key[j]]);
+}
+
+/* phase and code residuals --------------------------------------------------*/
+static int ppp_res_qc(int post, const obsd_t *obs, int n, const double *rs,
                    const double *dts, const double *var_rs, const int *svh,
                    const double *dr, int *exc, const nav_t *nav,
                    const double *x, rtk_t *rtk, double *v, double *H, double *R,
-                   double *azel)
+                   double *azel, ppp_qc_t *qc)
 {
     prcopt_t *opt=&rtk->opt;
     double y,r,cdtr,bias,rr[3],pos[3],e[3],dtdx[3];
@@ -1425,7 +1460,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 	double ve[MAXOBS * 2 * NFREQ] = { 0 }, vr[MAXOBS * 2 * NFREQ] = { 0 }, vmax = 0;
     ppp_eq_trace_t eq[MAXOBS*2*NFREQ];
     char str[32];char id[8];
-    int ne=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
+    int ne=0,qc_changed=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
 	int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1,frq,code;
 	double res = 0.0;
 	double gravitationalDelayModel = 0.;
@@ -1607,9 +1642,26 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 }
                 continue;
             }
-            /* record large post-fit residuals */
-			if (post&&fabs(res)>sqrt(var[nv])*THRES_REJECT) {
-				obsi[ne] = i; frqi[ne] = j; ve[ne] = res; vr[ne] = sqrt(var[nv]); ne++;
+            if (qc) {
+                int key=i*2*NFREQ+j;
+                qc->key[nv]=key;
+                if (post&&!qc->freeze) {
+                    double desired=ppp_huber_factor(res,var[nv],opt->robust_k);
+                    /* Monotone IRLS: avoid oscillatory reject/reinstate cycles.
+                     * A 5% tolerance and frozen final pass bound epoch latency. */
+                    if (desired>qc->factor[key]*1.05) {
+                        trace(2,"PPPQC,%s,%s,%s,IF%d,res=%.6f,sigma=%.6f,w=%.6f->%.6f,pass=%d\n",
+                              str,id,code?"CODE":"PHASE",frq+1,res,sqrt(var[nv]),
+                              1.0/qc->factor[key],1.0/desired,post);
+                        qc->factor[key]=desired;
+                        qc_changed=1;
+                    }
+                }
+            }
+            /* Gross postfit gate uses the applied variance; reweight first.
+             * On a changed pass the rejection decision below is deferred. */
+            if (post&&fabs(res)>sqrt(var[nv]*(qc?qc->factor[qc->key[nv]]:1.0))*THRES_REJECT) {
+				obsi[ne] = i; frqi[ne] = j; ve[ne] = res; vr[ne] = sqrt(var[nv]*(qc?qc->factor[qc->key[nv]]:1.0)); ne++;
             }
             if (code==0) rtk->ssat[sat-1].vsat[frq]=1;
             rowsat[nv]=sat;rowcode[nv]=code;rowpair[nv]=frq;
@@ -1632,7 +1684,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
         }
     }
     /* reject satellite with large and max post-fit residual */
-    if (post&&ne>0) {
+    if (post&&ne>0&&!qc_changed) {
         vmax=ve[0]/vr[0]; maxobs=obsi[0]; maxfrq=frqi[0]; rej=0;
         for (j=1;j<ne;j++) {
 			if (fabs(vmax) >= fabs(ve[j] / vr[j])) continue;
@@ -1653,8 +1705,19 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 R[i+j*nv]=R[j+i*nv]=commonvar[i]+crossvar[i];
         }
     }
+    if (qc&&R) ppp_qc_covariance(R,nv,qc->key,qc->factor);
+    if (qc&&!post) for (i=0;i<nv;i++) eq[i].variance*=qc->factor[qc->key[i]];
     if (!post&&H&&nv>0) trace_ppp_equations(obs[0].time,eq,nv,H,nx);
-    return post?stat:nv;
+    return post?(qc_changed?0:stat):nv;
+}
+/* Legacy wrapper retained for existing callers and white-box tests. */
+static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
+                   const double *dts, const double *var_rs, const int *svh,
+                   const double *dr, int *exc, const nav_t *nav,
+                   const double *x, rtk_t *rtk, double *v, double *H, double *R,
+                   double *azel)
+{
+    return ppp_res_qc(post,obs,n,rs,dts,var_rs,svh,dr,exc,nav,x,rtk,v,H,R,azel,NULL);
 }
 /* number of estimated states ------------------------------------------------*/
 extern int pppnx(const prcopt_t *opt)
@@ -1758,6 +1821,8 @@ static int test_hold_amb(rtk_t *rtk)
 /* precise point positioning -------------------------------------------------*/
 extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
+    ppp_qc_t qc_storage,*qc=NULL;
+    if (rtk->opt.robust==1) {ppp_qc_init(&qc_storage);qc=&qc_storage;}
 	const prcopt_t *opt=&rtk->opt;
 	double *rs,*dts,*var,*v,*H,*R,*azel,*xp,*Pp,*xb,*sb,dr[3]={0},std[3];
 	char str[32];
@@ -1803,12 +1868,12 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 	v=mat(nv,1); H=mat(rtk->nx,nv); R=mat(nv,nv);
 
 	for (i=0;i<MAX_ITER;i++) {
-
+        if (qc) qc->freeze=(i==MAX_ITER-1);
 		matcpy(xp,rtk->x,rtk->nx,1);
 		matcpy(Pp,rtk->P,rtk->nx,rtk->nx);
 
 		/* prefit residuals */
-		if (!(nv=ppp_res(0,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel))) {
+		if (!(nv=ppp_res_qc(0,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,qc))) {
 			trace(2,"%s ppp (%d) no valid obs data\n",str,i+1);
 			break;
 		}
@@ -1825,7 +1890,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 		trace_ppp_filter_states(obs[0].time,opt,xb,sb,xp,Pp,rtk->nx);
 
 		/* postfit residuals */
-		if (ppp_res(i+1,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel)) {
+		if (ppp_res_qc(i+1,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,qc)) {
 			matcpy(rtk->x,xp,rtk->nx,1);
 			matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
 			stat=SOLQ_PPP;
@@ -1838,8 +1903,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 	}
 
 	if (stat==SOLQ_PPP) {
-
-		if (ppp_res(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel)) {
+        if (qc) qc->freeze=1;
+		if (ppp_res_qc(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,qc)) {
 
 			matcpy(rtk->xa,xp,rtk->nx,1);
 			matcpy(rtk->Pa,Pp,rtk->nx,rtk->nx);

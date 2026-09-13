@@ -1,5 +1,3 @@
-> 此快照尚未加入 Huber 功能，只支持 --robust 0；下列残差开关的新增功能说明适用于第三版。
-
 # KXW 数据自行解算
 
 输入目录需要 ROVER、ROVER.tag、PPP、PPP.tag，分别是 RTCM3 观测及 KXW B2b 改正与配套时间标签。不要修改原始文件名，也不要只复制主文件漏掉 .tag。卫星 ANTEX 需覆盖采集日期和所用频段；接收机型号未知的功能保留。
@@ -18,13 +16,13 @@ cmake --build build --config Release --target rtppp inspect_rtcm_input inspect_k
 ## 一条命令解算并统计
 
 ```powershell
-python tools/run_kxw.py --data D:/WORK-FRR/DATA/260909-4 --output example/rtppp/my_run_260909_4 --antenna example/rtppp/conf/igs20.atx --elevation 7 --robust 0
+python tools/run_kxw.py --data D:/WORK-FRR/DATA/260909-4 --output example/rtppp/my_run_260909_4 --antenna example/rtppp/conf/igs20.atx --elevation 7 --robust 1
 ```
 
 - 换数据：只修改 `--data`。
 - 换结果目录：修改 `--output`，必须是新的空目录，防止旧滤波状态和输出混入。
 - 换高度角：`--elevation 7` 或 `--elevation 10`。
-- 原有剔除：`--robust 0`；新增降权加原有剔除：`--robust 0`。
+- 原有剔除：`--robust 0`；新增降权加原有剔除：`--robust 1`。
 - 默认静态：`--mode static`。确为动态数据时用 `--mode kinematic`；动态模式不自动生成“末尾均值为真值”的静态统计。
 - 默认20倍回放：处理能力不足时用 `--speed 1`、`5` 或 `10`，支持1至20。
 - 其他模型参数：编辑 `example/rtppp/conf/kxw_if1213.conf`，或用 `--template 自己的.conf`。脚本仅覆盖数据/结果路径、卫星天线文件、模式、高度角、降权参数和回放终点，保留模板中的频率组合、接收机天线设置等。

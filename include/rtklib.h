@@ -1522,6 +1522,8 @@ typedef struct {        /* processing options type */
     int gal_ephemeris;     /* 0:disabled, 1:explicit broadcast-only GAL */
     double gal_brdc_sigma; /* common satellite range sigma floor (m), 0:3 */
     char gal_navfile[MAXSTRPATH]; /* external GAL RINEX navigation */
+    int robust;           /* PPP: 0:legacy rejection, 1:postfit Huber reweighting */
+    double robust_k;      /* Huber breakpoint in observation sigma, 0:2.5 */
 } prcopt_t;
 
 extern int gal_load_nav(nav_t *nav, const char *file, char *msg);

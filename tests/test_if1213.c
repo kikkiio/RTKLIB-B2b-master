@@ -122,6 +122,26 @@ static void equations(void)
         CHECK(isfinite(rrr[cap*cap-1])&&rrr[cap*cap-1]>0);
         free(vv);free(hh);free(rrr);
     }
+    {
+        ppp_qc_t qc;double base[16],weighted[16],postv[4],oldP=obs.P[0];
+        ppp_qc_init(&qc);
+        n=ppp_res(0,&obs,1,rs,dts,vr,svh,dr,exc,nav,rtk.x,&rtk,v,H,base,az);
+        qc.factor[1]=4;
+        CHECK(ppp_res_qc(0,&obs,1,rs,dts,vr,svh,dr,exc,nav,rtk.x,&rtk,v,H,weighted,az,&qc)==n);
+        NEAR(weighted[1+1*4],4*base[1+1*4],1E-10);
+        NEAR(weighted[1+3*4],2*base[1+3*4],1E-10);
+        NEAR(weighted[0],base[0],1E-10);
+        ppp_qc_init(&qc);
+        obs.P[0]+=100;
+        CHECK(!ppp_res_qc(1,&obs,1,rs,dts,vr,svh,dr,exc,nav,rtk.x,&rtk,postv,H,weighted,az,&qc));
+        CHECK(qc.factor[1]>1&&qc.factor[3]>1);
+        CHECK(!exc[0]); /* reweighting precedes gross satellite rejection */
+        qc.freeze=1;
+        { double hold=qc.factor[1];
+          ppp_res_qc(2,&obs,1,rs,dts,vr,svh,dr,exc,nav,rtk.x,&rtk,postv,H,weighted,az,&qc);
+          NEAR(hold,qc.factor[1],1E-12); }
+        obs.P[0]=oldP;exc[0]=0;
+    }
     obs.L[2]=0;exc[0]=0;
     n=ppp_res(0,&obs,1,rs,dts,vr,svh,dr,exc,nav,rtk.x,&rtk,v,H,R,az);CHECK(n==2);
     /* A code outlier must also remove the phase row already stacked. */
@@ -490,6 +510,57 @@ static void gal_navigation_tests(void)
     CHECK(remove(path)==0);freenav(nav,1);CHECK(!nav->gal_eph&&!nav->ngal_eph);free(nav);
 }
 
+
+static void robust_tests(void)
+{
+    ppp_qc_t qc;
+    double R[4]={4,1,1,9},corr=1.0/6.0;
+    int key[2]={0,3},i,j;
+    prcopt_t o=options();char msg[128];
+    ppp_qc_init(&qc);
+    NEAR(ppp_huber_factor(0,1,2.5),1,1E-12);
+    NEAR(ppp_huber_factor(2.5,1,2.5),1,1E-12);
+    NEAR(ppp_huber_factor(-10,4,2.5),2,1E-12);
+    NEAR(ppp_huber_factor(1E9,1,2.5),100,1E-12);
+    NEAR(ppp_huber_factor(10,4,0),2,1E-12);
+    qc.factor[key[0]]=4;qc.factor[key[1]]=9;
+    ppp_qc_covariance(R,2,key,qc.factor);
+    NEAR(R[0],16,1E-12);NEAR(R[3],81,1E-12);
+    NEAR(R[1],6,1E-12);NEAR(R[1],R[2],1E-12);
+    NEAR(R[1]/sqrt(R[0]*R[3]),corr,1E-12);
+    CHECK(R[0]*R[3]>R[1]*R[2]); /* positive definiteness */
+    /* Independently solvable scalar location problem, with one contaminated
+     * observation. All retries deliberately start from the same weak prior. */
+    {
+        double y[5]={0.2,-0.2,0.1,-0.1,10},H[5]={1,1,1,1,1};
+        double factors[5]={1,1,1,1,1},cov[25],x=0,P=1E6,v[5],plain=0;
+        for (i=0;i<8;i++) {
+            x=1E-6;P=1E6; /* RTKLIB uses exactly-zero states as inactive. */
+            memset(cov,0,sizeof(cov));
+            for (j=0;j<5;j++) {cov[j+j*5]=factors[j];v[j]=y[j]-x;}
+            CHECK(filter(&x,&P,H,v,cov,1,5)==0);
+            if (!i) plain=x;
+            for (j=0;j<5;j++) {
+                double desired=ppp_huber_factor(y[j]-x,1,2.5);
+                if (desired>factors[j]*1.05) factors[j]=desired;
+            }
+        }
+        CHECK(plain>1.9&&plain<2.1);
+        CHECK(fabs(x)<0.8&&fabs(x)<fabs(plain)*0.4);
+        CHECK(P>0&&P<1);
+    }
+    resetsysopts();
+    CHECK(str2opt(searchopt("pos2-ppprobust",sysopts),"1"));
+    CHECK(str2opt(searchopt("pos2-ppprobustk",sysopts),"2.5"));
+    getsysopts(&o,NULL,NULL);
+    CHECK(o.robust==1);NEAR(o.robust_k,2.5,1E-12);
+    CHECK(if_options_normalize(&o,msg));
+    o.robust=2;CHECK(!if_options_normalize(&o,msg));o.robust=1;
+    o.robust_k=-1;CHECK(!if_options_normalize(&o,msg));
+    resetsysopts();
+}
+
+
 static void bds_prn_reassignment_tests(void)
 {
     nav_t *nav=calloc(1,sizeof(*nav));
@@ -516,6 +587,7 @@ static void bds_prn_reassignment_tests(void)
 int main(void)
 {
     bds_prn_reassignment_tests();
+    robust_tests();
     coefficients();selection();antenna();configurable_selection();pair_config_tests();measurement_regression();gal_model_tests();gal_navigation_tests();
     measurement_and_slip("B2a,B1C,B1I");measurement_and_slip("B1I,B3I,B2a");equations();
     printf("IF1213: %d checks, %d failures\n",checks,failures);
